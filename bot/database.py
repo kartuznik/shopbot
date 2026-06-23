@@ -80,6 +80,19 @@ async def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
                 FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                order_id INTEGER NOT NULL UNIQUE,
+                rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                comment TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+                FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+            );
             """
         )
         await _migrate_products_table_with_category_fk(db)
@@ -514,3 +527,312 @@ def db_integrity_check(db_path: str) -> str:
         return str(row[0]) if row else 'unknown'
     finally:
         connection.close()
+
+
+async def get_product_rating_summary(product_id: int) -> dict[str, Any]:
+    db = await get_db()
+    try:
+        avg_row = await (
+            await db.execute(
+                """
+                SELECT AVG(rating) AS avg_rating, COUNT(*) AS reviews_count
+                FROM reviews
+                WHERE product_id = ?
+                """,
+                (product_id,),
+            )
+        ).fetchone()
+        distribution_rows = await (
+            await db.execute(
+                """
+                SELECT rating, COUNT(*) AS count
+                FROM reviews
+                WHERE product_id = ?
+                GROUP BY rating
+                ORDER BY rating DESC
+                """,
+                (product_id,),
+            )
+        ).fetchall()
+        distribution = {int(row['rating']): int(row['count']) for row in distribution_rows}
+        return {
+            'avg_rating': float(avg_row['avg_rating'] or 0.0),
+            'reviews_count': int(avg_row['reviews_count'] or 0),
+            'distribution': distribution,
+        }
+    finally:
+        await db.close()
+
+
+async def get_product_reviews(product_id: int, limit: int = 20) -> list[dict[str, Any]]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT r.id, r.user_id, u.username, r.order_id, r.rating, r.comment, r.created_at
+                FROM reviews r
+                LEFT JOIN users u ON u.user_id = r.user_id
+                WHERE r.product_id = ?
+                ORDER BY r.id DESC
+                LIMIT ?
+                """,
+                (product_id, limit),
+            )
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+async def can_user_review_order(user_id: int, order_id: int) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        row = await (
+            await db.execute(
+                """
+                SELECT o.id, o.user_id, o.product_id, o.status, p.name AS product_name
+                FROM orders o
+                JOIN products p ON p.id = o.product_id
+                WHERE o.id = ? AND o.user_id = ? AND o.status = 'delivered'
+                """,
+                (order_id, user_id),
+            )
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def save_review(
+    user_id: int,
+    product_id: int,
+    order_id: int,
+    rating: int,
+    comment: str | None,
+) -> int:
+    db = await get_db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO reviews (user_id, product_id, order_id, rating, comment)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(order_id) DO UPDATE SET
+                rating = excluded.rating,
+                comment = excluded.comment,
+                created_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, product_id, order_id, rating, (comment or '').strip() or None),
+        )
+        await db.commit()
+        row = await (await db.execute('SELECT id FROM reviews WHERE order_id = ?', (order_id,))).fetchone()
+        return int(row[0])
+    finally:
+        await db.close()
+
+
+async def delete_review(review_id: int) -> bool:
+    db = await get_db()
+    try:
+        cursor = await db.execute('DELETE FROM reviews WHERE id = ?', (review_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+async def get_order_for_review(order_id: int) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        row = await (
+            await db.execute(
+                """
+                SELECT o.id, o.user_id, o.product_id, o.status, p.name AS product_name
+                FROM orders o
+                JOIN products p ON p.id = o.product_id
+                WHERE o.id = ?
+                """,
+                (order_id,),
+            )
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def get_sales_overview() -> dict[str, Any]:
+    db = await get_db()
+    try:
+        base_row = await (
+            await db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM users) AS users_total,
+                    (SELECT COUNT(*) FROM orders) AS orders_total,
+                    (SELECT COALESCE(SUM(total_price), 0) FROM orders) AS sales_total
+                """
+            )
+        ).fetchone()
+        top_products_rows = await (
+            await db.execute(
+                """
+                SELECT p.name, SUM(o.quantity) AS qty
+                FROM orders o
+                JOIN products p ON p.id = o.product_id
+                GROUP BY o.product_id
+                ORDER BY qty DESC
+                LIMIT 5
+                """
+            )
+        ).fetchall()
+        top_categories_rows = await (
+            await db.execute(
+                """
+                SELECT COALESCE(c.name, 'Без категории') AS name, SUM(o.total_price) AS total
+                FROM orders o
+                JOIN products p ON p.id = o.product_id
+                LEFT JOIN categories c ON c.id = p.category_id
+                GROUP BY COALESCE(c.id, -1)
+                ORDER BY total DESC
+                LIMIT 5
+                """
+            )
+        ).fetchall()
+        statuses_rows = await (
+            await db.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM orders
+                GROUP BY status
+                """
+            )
+        ).fetchall()
+        last_7 = await (
+            await db.execute(
+                """
+                SELECT COUNT(*) AS count, COALESCE(SUM(total_price), 0) AS amount
+                FROM orders
+                WHERE datetime(created_at) >= datetime('now', '-7 day')
+                """
+            )
+        ).fetchone()
+        last_30 = await (
+            await db.execute(
+                """
+                SELECT COUNT(*) AS count, COALESCE(SUM(total_price), 0) AS amount
+                FROM orders
+                WHERE datetime(created_at) >= datetime('now', '-30 day')
+                """
+            )
+        ).fetchone()
+        sales_total = float(base_row['sales_total'] or 0.0)
+        orders_total = int(base_row['orders_total'] or 0)
+        return {
+            'users_total': int(base_row['users_total'] or 0),
+            'orders_total': orders_total,
+            'sales_total': sales_total,
+            'avg_check': sales_total / orders_total if orders_total else 0.0,
+            'top_products': [dict(row) for row in top_products_rows],
+            'top_categories': [dict(row) for row in top_categories_rows],
+            'statuses': {str(row['status']): int(row['count']) for row in statuses_rows},
+            'last_7': {'count': int(last_7['count'] or 0), 'amount': float(last_7['amount'] or 0.0)},
+            'last_30': {'count': int(last_30['count'] or 0), 'amount': float(last_30['amount'] or 0.0)},
+        }
+    finally:
+        await db.close()
+
+
+def _period_modifier(period: str) -> str:
+    mapping = {
+        'day': '-1 day',
+        'week': '-7 day',
+        'month': '-30 day',
+        'year': '-365 day',
+    }
+    return mapping.get(period, '-7 day')
+
+
+async def get_sales_by_period(period: str) -> dict[str, Any]:
+    db = await get_db()
+    try:
+        modifier = _period_modifier(period)
+        total_row = await (
+            await db.execute(
+                """
+                SELECT
+                    COUNT(*) AS orders_count,
+                    COALESCE(SUM(total_price), 0) AS sales_total
+                FROM orders
+                WHERE datetime(created_at) >= datetime('now', ?)
+                """,
+                (modifier,),
+            )
+        ).fetchone()
+        top_rows = await (
+            await db.execute(
+                """
+                SELECT p.name, SUM(o.quantity) AS qty
+                FROM orders o
+                JOIN products p ON p.id = o.product_id
+                WHERE datetime(o.created_at) >= datetime('now', ?)
+                GROUP BY o.product_id
+                ORDER BY qty DESC
+                LIMIT 5
+                """,
+                (modifier,),
+            )
+        ).fetchall()
+        orders_count = int(total_row['orders_count'] or 0)
+        sales_total = float(total_row['sales_total'] or 0.0)
+        return {
+            'period': period,
+            'orders_count': orders_count,
+            'sales_total': sales_total,
+            'avg_check': sales_total / orders_count if orders_count else 0.0,
+            'top_products': [dict(row) for row in top_rows],
+        }
+    finally:
+        await db.close()
+
+
+async def get_users_stats() -> dict[str, Any]:
+    db = await get_db()
+    try:
+        day_row = await (
+            await db.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN datetime(created_at) >= datetime('now', '-1 day') THEN 1 ELSE 0 END) AS day_count,
+                    SUM(CASE WHEN datetime(created_at) >= datetime('now', '-7 day') THEN 1 ELSE 0 END) AS week_count,
+                    SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 day') THEN 1 ELSE 0 END) AS month_count,
+                    COUNT(*) AS total_count
+                FROM users
+                """
+            )
+        ).fetchone()
+        active_row = await (
+            await db.execute(
+                """
+                SELECT
+                    COUNT(DISTINCT CASE WHEN datetime(created_at) >= datetime('now', '-1 day') THEN user_id END) AS active_day,
+                    COUNT(DISTINCT CASE WHEN datetime(created_at) >= datetime('now', '-7 day') THEN user_id END) AS active_week,
+                    COUNT(DISTINCT CASE WHEN datetime(created_at) >= datetime('now', '-30 day') THEN user_id END) AS active_month,
+                    COUNT(DISTINCT user_id) AS active_total
+                FROM orders
+                """
+            )
+        ).fetchone()
+        total_users = int(day_row['total_count'] or 0)
+        users_with_orders = int(active_row['active_total'] or 0)
+        return {
+            'new_day': int(day_row['day_count'] or 0),
+            'new_week': int(day_row['week_count'] or 0),
+            'new_month': int(day_row['month_count'] or 0),
+            'active_day': int(active_row['active_day'] or 0),
+            'active_week': int(active_row['active_week'] or 0),
+            'active_month': int(active_row['active_month'] or 0),
+            'total_users': total_users,
+            'conversion': (users_with_orders / total_users * 100) if total_users else 0.0,
+        }
+    finally:
+        await db.close()

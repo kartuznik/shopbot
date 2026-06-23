@@ -12,3 +12,7 @@ class ProductStates(StatesGroup):
 class OrderStates(StatesGroup):
     quantity = State()
     confirm = State()
+
+
+class ReviewStates(StatesGroup):
+    comment = State()

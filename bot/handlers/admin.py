@@ -20,6 +20,7 @@ from bot.database import (
     update_product,
 )
 from bot.health import get_monitor
+from bot.handlers.reviews import send_review_request
 from bot.keyboards.inline import (
     ORDER_STATUS_LABELS,
     admin_keyboard,
@@ -283,6 +284,8 @@ async def cmd_order_status(message: Message) -> None:
         await message.answer(f'❌ Неверный статус. Доступно: {", ".join(sorted(ORDER_STATUSES))}')
         return
     await message.answer(f'✅ Статус заказа #{order_id} обновлен: {ORDER_STATUS_LABELS.get(status, status)}')
+    if status == 'delivered':
+        await send_review_request(message.bot, order_id)
     await _notify_admins_status_change(message.bot, order_id, status)
 
 
@@ -302,6 +305,8 @@ async def callback_order_status_set(callback: CallbackQuery) -> None:
     await callback.message.answer(
         f'✅ Статус заказа #{order_id}: {ORDER_STATUS_LABELS.get(status, status)}'
     )
+    if status == 'delivered':
+        await send_review_request(callback.bot, order_id)
     await _notify_admins_status_change(callback.bot, order_id, status)
 
 

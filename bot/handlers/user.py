@@ -12,6 +12,7 @@ from bot.database import (
     get_categories,
     get_cart_items,
     get_product,
+    get_product_rating_summary,
     get_products,
     search_products,
     get_user_orders,
@@ -22,7 +23,7 @@ from bot.keyboards.inline import (
     cart_keyboard,
     catalog_categories_keyboard,
     catalog_products_keyboard,
-    product_keyboard,
+    product_keyboard_with_reviews,
 )
 
 router = Router()
@@ -159,15 +160,29 @@ async def callback_product(callback: CallbackQuery) -> None:
         f"{product['description'] or '-'}\n"
         f"Цена: {float(product['price']):.2f}"
     )
+    rating = await get_product_rating_summary(product_id)
+    if rating['reviews_count'] > 0:
+        text += f"\nРейтинг: ⭐ {rating['avg_rating']:.1f}/5 ({rating['reviews_count']} отзывов)"
     await callback.answer()
     if product.get('photo_id'):
         await callback.message.answer_photo(
             photo=product['photo_id'],
             caption=text,
-            reply_markup=product_keyboard(product_id, scope),
+            reply_markup=product_keyboard_with_reviews(
+                product_id=product_id,
+                scope=scope,
+                has_reviews=rating['reviews_count'] > 0,
+            ),
         )
     else:
-        await callback.message.answer(text, reply_markup=product_keyboard(product_id, scope))
+        await callback.message.answer(
+            text,
+            reply_markup=product_keyboard_with_reviews(
+                product_id=product_id,
+                scope=scope,
+                has_reviews=rating['reviews_count'] > 0,
+            ),
+        )
 
 
 @router.callback_query(F.data == 'back_catalog')

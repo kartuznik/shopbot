@@ -43,12 +43,15 @@ def catalog_products_keyboard(products: list[dict], scope: str) -> InlineKeyboar
 
 
 def product_keyboard(product_id: int, scope: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text='Купить', callback_data=f'buy:{product_id}:{scope}')],
-            [InlineKeyboardButton(text='⬅️ Назад', callback_data=f'back_scope:{scope}')],
-        ]
-    )
+    return product_keyboard_with_reviews(product_id=product_id, scope=scope, has_reviews=False)
+
+
+def product_keyboard_with_reviews(product_id: int, scope: str, has_reviews: bool) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text='Купить', callback_data=f'buy:{product_id}:{scope}')]]
+    if has_reviews:
+        rows.append([InlineKeyboardButton(text='⭐ Отзывы', callback_data=f'product_reviews:{product_id}')])
+    rows.append([InlineKeyboardButton(text='⬅️ Назад', callback_data=f'back_scope:{scope}')])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def cart_keyboard() -> InlineKeyboardMarkup:
@@ -66,6 +69,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text='➕ Добавить товар', callback_data='admin_add_product')],
             [InlineKeyboardButton(text='📦 Заказы', callback_data='admin_orders')],
             [InlineKeyboardButton(text='👥 Пользователи', callback_data='admin_users')],
+            [InlineKeyboardButton(text='📊 Аналитика', callback_data='admin_analytics')],
         ]
     )
 
@@ -91,3 +95,23 @@ def order_status_keyboard(order_id: int) -> InlineKeyboardMarkup:
         for status, label in ORDER_STATUS_LABELS.items()
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def review_rating_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text='1⭐', callback_data=f'review_rate:{order_id}:1'),
+            InlineKeyboardButton(text='2⭐', callback_data=f'review_rate:{order_id}:2'),
+            InlineKeyboardButton(text='3⭐', callback_data=f'review_rate:{order_id}:3'),
+            InlineKeyboardButton(text='4⭐', callback_data=f'review_rate:{order_id}:4'),
+            InlineKeyboardButton(text='5⭐', callback_data=f'review_rate:{order_id}:5'),
+        ],
+        [InlineKeyboardButton(text='Пропустить', callback_data=f'review_skip:{order_id}')],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def review_comment_skip_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text='Пропустить комментарий', callback_data='review_comment_skip')]]
+    )

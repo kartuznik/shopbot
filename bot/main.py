@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher
 from bot.config import get_settings
 from bot.database import init_db
 from bot.health import BotHealthMonitor, set_monitor
-from bot.handlers import admin, user
+from bot.handlers import admin, analytics, reviews, user
 
 
 async def main() -> None:
@@ -20,6 +20,8 @@ async def main() -> None:
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(admin.router)
+    dp.include_router(analytics.router)
+    dp.include_router(reviews.router)
     dp.include_router(user.router)
 
     monitor = BotHealthMonitor(

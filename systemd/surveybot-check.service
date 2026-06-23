@@ -1,0 +1,9 @@
+[Unit]
+Description=ShopBot periodic health check
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/bots/shopbot
+ExecStart=/opt/bots/shopbot/scripts/surveybot_check.sh

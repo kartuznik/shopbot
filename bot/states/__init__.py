@@ -4,8 +4,9 @@ from aiogram.fsm.state import State, StatesGroup
 class ProductStates(StatesGroup):
     name = State()
     description = State()
+    category_id = State()
     price = State()
-    photo_id = State()
+    photo = State()
 
 
 class OrderStates(StatesGroup):

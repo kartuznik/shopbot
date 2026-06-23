@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Категории{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Категории</h1>
+<form method="post" class="card card-body mb-3">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <div class="row g-2">
+        <div class="col-md-4"><input class="form-control" name="name" placeholder="Название" required></div>
+        <div class="col-md-6"><input class="form-control" name="description" placeholder="Описание"></div>
+        <div class="col-md-2"><button class="btn btn-primary w-100">Добавить</button></div>
+    </div>
+</form>
+<div class="table-responsive">
+    <table class="table table-striped">
+        <thead><tr><th>ID</th><th>Название</th><th>Описание</th><th></th></tr></thead>
+        <tbody>
+        {% for item in categories %}
+            <tr>
+                <td>{{ item.id }}</td>
+                <td>{{ item.name }}</td>
+                <td>{{ item.description or '-' }}</td>
+                <td>
+                    <form method="post" action="{{ url_for('category_delete', category_id=item.id) }}">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-sm btn-outline-danger" onclick="return confirm('Удалить категорию?')">Удалить</button>
+                    </form>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="4" class="text-muted">Категорий нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

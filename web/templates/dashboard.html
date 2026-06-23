@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Дашборд{% endblock %}
+{% block content %}
+<h1 class="h3 mb-4">Дашборд</h1>
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+        <div class="card card-stat"><div class="card-body"><div class="text-muted">Пользователи</div><div class="h4">{{ users_total }}</div></div></div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card card-stat"><div class="card-body"><div class="text-muted">Заказы</div><div class="h4">{{ orders_total }}</div></div></div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card card-stat"><div class="card-body"><div class="text-muted">Продажи</div><div class="h4">{{ "%.2f"|format(sales_total) }}</div></div></div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card card-stat"><div class="card-body"><div class="text-muted">Отчеты</div><a class="btn btn-sm btn-outline-primary mt-2" href="{{ url_for('sales_report', period='month') }}">За месяц</a></div></div>
+    </div>
+</div>
+<div class="card">
+    <div class="card-header">Топ-товары</div>
+    <div class="table-responsive">
+        <table class="table mb-0">
+            <thead><tr><th>Товар</th><th>Продано</th></tr></thead>
+            <tbody>
+            {% for item in top_products %}
+                <tr><td>{{ item.name }}</td><td>{{ item.qty }}</td></tr>
+            {% else %}
+                <tr><td colspan="2" class="text-muted">Нет данных</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

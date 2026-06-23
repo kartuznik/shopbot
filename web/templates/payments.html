@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Платежи{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Платежи</h1>
+<div class="table-responsive">
+    <table class="table table-striped">
+        <thead><tr><th>ID</th><th>Order</th><th>User</th><th>Сумма</th><th>Статус</th><th>Payment ID</th><th>Создан</th></tr></thead>
+        <tbody>
+        {% for item in payments %}
+            <tr>
+                <td>{{ item.id }}</td>
+                <td>#{{ item.order_id }}</td>
+                <td>{{ item.user_id or '-' }}</td>
+                <td>{{ "%.2f"|format(item.amount) }} {{ item.currency }}</td>
+                <td>{{ item.status }}</td>
+                <td class="small">{{ item.payment_id or '-' }}</td>
+                <td>{{ item.created_at }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="7" class="text-muted">Платежей нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% include "_pagination.html" %}
+{% endblock %}

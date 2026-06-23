@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     LANGUAGE: str = Field(default='ru')
     YUKASSA_SHOP_ID: str = Field(default='')
     YUKASSA_SECRET_KEY: str = Field(default='')
+    ADMIN_WEB_PASSWORD: str = Field(default='')
 
     @field_validator('ADMIN_IDS', mode='before')
     @classmethod

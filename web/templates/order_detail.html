@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Детали заказа{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Детали заказа</h1>
+{% if order %}
+<div class="card card-body">
+    <p><strong>ID:</strong> #{{ order.id }}</p>
+    <p><strong>Пользователь:</strong> {{ order.user_id }} @{{ order.username or '-' }}</p>
+    <p><strong>Товар:</strong> {{ order.name }}</p>
+    <p><strong>Кол-во:</strong> {{ order.quantity }}</p>
+    <p><strong>Сумма:</strong> {{ "%.2f"|format(order.total_price) }}</p>
+    <p><strong>Доставка:</strong> {{ "%.2f"|format(order.shipping_cost or 0) }}</p>
+    <p><strong>Адрес:</strong> {{ order.address or '-' }}</p>
+    <p><strong>Статус:</strong> {{ order.status }}</p>
+    <p><strong>Создан:</strong> {{ order.created_at }}</p>
+</div>
+{% else %}
+<div class="alert alert-warning">Заказ не найден.</div>
+{% endif %}
+{% endblock %}

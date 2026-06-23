@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Пользователи{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Пользователи</h1>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-success" href="{{ url_for('users_export', fmt='csv') }}">CSV</a>
+        <a class="btn btn-outline-success" href="{{ url_for('users_export', fmt='xlsx') }}">Excel</a>
+    </div>
+</div>
+<form class="d-flex gap-2 mb-3">
+    <input class="form-control" name="q" value="{{ q }}" placeholder="Поиск по id или username">
+    <button class="btn btn-outline-secondary">Найти</button>
+</form>
+<div class="table-responsive">
+    <table class="table table-striped">
+        <thead><tr><th>User ID</th><th>Username</th><th>Создан</th><th>Активность</th><th></th></tr></thead>
+        <tbody>
+        {% for item in users %}
+            <tr>
+                <td>{{ item.user_id }}</td>
+                <td>@{{ item.username or '-' }}</td>
+                <td>{{ item.created_at }}</td>
+                <td>{{ item.last_activity }}</td>
+                <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('user_detail', user_id=item.user_id) }}">Детали</a></td>
+            </tr>
+        {% else %}
+            <tr><td colspan="5" class="text-muted">Пользователей нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% include "_pagination.html" %}
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Товары{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Товары</h1>
+    <a class="btn btn-primary" href="{{ url_for('products_add') }}">Добавить товар</a>
+</div>
+<div class="d-flex gap-2 mb-3 flex-wrap">
+    <form class="d-flex gap-2" method="get">
+        <input class="form-control" name="q" value="{{ q }}" placeholder="Поиск по названию">
+        <button class="btn btn-outline-secondary">Найти</button>
+    </form>
+    <a class="btn btn-outline-success" href="{{ url_for('products_export', fmt='csv') }}">Экспорт CSV</a>
+    <a class="btn btn-outline-success" href="{{ url_for('products_export', fmt='xlsx') }}">Экспорт Excel</a>
+</div>
+<div class="table-responsive">
+    <table class="table table-striped">
+        <thead><tr><th>ID</th><th>Название</th><th>Категория</th><th>Цена</th><th>Фото</th><th></th></tr></thead>
+        <tbody>
+        {% for item in products %}
+            <tr>
+                <td>{{ item.id }}</td>
+                <td>{{ item.name }}</td>
+                <td>{{ item.category_name or '-' }}</td>
+                <td>{{ "%.2f"|format(item.price) }}</td>
+                <td class="small text-break">{{ item.photo_id or '-' }}</td>
+                <td class="text-nowrap">
+                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('products_edit', product_id=item.id) }}">Изменить</a>
+                    <form method="post" action="{{ url_for('products_delete', product_id=item.id) }}" class="d-inline">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-sm btn-outline-danger" onclick="return confirm('Удалить товар?')">Удалить</button>
+                    </form>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="6" class="text-muted">Товаров нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% include "_pagination.html" %}
+{% endblock %}

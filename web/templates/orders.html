@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Заказы{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Заказы</h1>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-success" href="{{ url_for('orders_export', fmt='csv', status=status_filter) }}">CSV</a>
+        <a class="btn btn-outline-success" href="{{ url_for('orders_export', fmt='xlsx', status=status_filter) }}">Excel</a>
+    </div>
+</div>
+<form class="row g-2 mb-3">
+    <div class="col-sm-4 col-md-3">
+        <select class="form-select" name="status">
+            <option value="">Все статусы</option>
+            {% for s in ['new','confirmed','paid','shipped','delivered','cancelled'] %}
+            <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-sm-2"><button class="btn btn-outline-secondary w-100">Фильтр</button></div>
+</form>
+<div class="table-responsive">
+    <table class="table table-striped align-middle">
+        <thead><tr><th>ID</th><th>User</th><th>Товар</th><th>Сумма</th><th>Статус</th><th>Дата</th><th></th></tr></thead>
+        <tbody>
+        {% for item in orders %}
+            <tr>
+                <td>#{{ item.id }}</td>
+                <td>{{ item.user_id }} @{{ item.username or '-' }}</td>
+                <td>{{ item.name }} x{{ item.quantity }}</td>
+                <td>{{ "%.2f"|format(item.total_price) }}</td>
+                <td>
+                    <form method="post" action="{{ url_for('order_status_update', order_id=item.id) }}" class="d-flex gap-1">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                        <select class="form-select form-select-sm" name="status">
+                            {% for s in ['new','confirmed','paid','shipped','delivered','cancelled'] %}
+                            <option value="{{ s }}" {% if item.status == s %}selected{% endif %}>{{ s }}</option>
+                            {% endfor %}
+                        </select>
+                        <button class="btn btn-sm btn-outline-primary">OK</button>
+                    </form>
+                </td>
+                <td>{{ item.created_at }}</td>
+                <td><a class="btn btn-sm btn-outline-secondary" href="{{ url_for('order_detail', order_id=item.id) }}">Детали</a></td>
+            </tr>
+        {% else %}
+            <tr><td colspan="7" class="text-muted">Заказов нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% include "_pagination.html" %}
+{% endblock %}

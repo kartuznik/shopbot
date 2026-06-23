@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Отзывы{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Отзывы</h1>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-success" href="{{ url_for('reviews_export', fmt='csv') }}">CSV</a>
+        <a class="btn btn-outline-success" href="{{ url_for('reviews_export', fmt='xlsx') }}">Excel</a>
+    </div>
+</div>
+<div class="table-responsive">
+    <table class="table table-striped">
+        <thead><tr><th>ID</th><th>Товар</th><th>Пользователь</th><th>Рейтинг</th><th>Комментарий</th><th></th></tr></thead>
+        <tbody>
+        {% for item in reviews %}
+            <tr>
+                <td>{{ item.id }}</td>
+                <td>{{ item.product_name }}</td>
+                <td>{{ item.user_id }} @{{ item.username or '-' }}</td>
+                <td>{{ item.rating }}</td>
+                <td>{{ item.comment or '-' }}</td>
+                <td>
+                    <form method="post" action="{{ url_for('review_delete', review_id=item.id) }}">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-sm btn-outline-danger" onclick="return confirm('Удалить отзыв?')">Удалить</button>
+                    </form>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="6" class="text-muted">Отзывов нет.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% include "_pagination.html" %}
+{% endblock %}

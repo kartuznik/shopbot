@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Детали пользователя{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Пользователь</h1>
+{% if user %}
+<div class="card card-body mb-3">
+    <p><strong>ID:</strong> {{ user.user_id }}</p>
+    <p><strong>Username:</strong> @{{ user.username or '-' }}</p>
+    <p><strong>Создан:</strong> {{ user.created_at }}</p>
+    <p><strong>Активность:</strong> {{ user.last_activity }}</p>
+</div>
+<div class="card">
+    <div class="card-header">История заказов</div>
+    <div class="table-responsive">
+        <table class="table mb-0">
+            <thead><tr><th>ID</th><th>Товар</th><th>Сумма</th><th>Статус</th><th>Дата</th></tr></thead>
+            <tbody>
+            {% for item in orders %}
+                <tr><td>#{{ item.id }}</td><td>{{ item.name }} x{{ item.quantity }}</td><td>{{ "%.2f"|format(item.total_price) }}</td><td>{{ item.status }}</td><td>{{ item.created_at }}</td></tr>
+            {% else %}
+                <tr><td colspan="5" class="text-muted">Заказов нет.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-warning">Пользователь не найден.</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Редактировать товар' if product else 'Добавить товар' }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">{{ 'Редактировать товар' if product else 'Добавить товар' }}</h1>
+<form method="post" enctype="multipart/form-data" class="card card-body">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    <div class="row g-3">
+        <div class="col-md-6">
+            <label class="form-label">Название</label>
+            <input class="form-control" name="name" value="{{ product.name if product else '' }}" required>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">Цена</label>
+            <input class="form-control" name="price" value="{{ product.price if product else '' }}" required>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">Категория</label>
+            <select class="form-select" name="category_id">
+                <option value="">Без категории</option>
+                {% for c in categories %}
+                <option value="{{ c.id }}" {% if product and product.category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-12">
+            <label class="form-label">Описание</label>
+            <textarea class="form-control" name="description" rows="4">{{ product.description if product else '' }}</textarea>
+        </div>
+        <div class="col-md-6">
+            <label class="form-label">Фото (photo_id или URL)</label>
+            <input class="form-control" name="photo_id" value="{{ product.photo_id if product else '' }}">
+        </div>
+        <div class="col-md-6">
+            <label class="form-label">Загрузка фото (создаст URL)</label>
+            <input class="form-control" type="file" name="photo_file" accept="image/*">
+        </div>
+    </div>
+    <div class="mt-3 d-flex gap-2">
+        <button class="btn btn-primary">Сохранить</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('products') }}">Назад</a>
+    </div>
+</form>
+{% endblock %}

@@ -1,0 +1,15 @@
+[Unit]
+Description=ShopBot Web Admin Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/bots/shopbot
+ExecStart=/opt/bots/shopbot/venv/bin/python -m web.app
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

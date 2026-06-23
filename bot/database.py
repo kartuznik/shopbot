@@ -123,6 +123,39 @@ async def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
                 FOREIGN KEY (zone_id) REFERENCES delivery_zones(id) ON DELETE SET NULL
             );
+
+            CREATE TABLE IF NOT EXISTS broadcasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                scheduled_at TEXT,
+                sent_at TEXT,
+                created_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS broadcast_recipients (
+                broadcast_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                sent_at TEXT,
+                error TEXT,
+                PRIMARY KEY (broadcast_id, user_id),
+                FOREIGN KEY (broadcast_id) REFERENCES broadcasts(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS sheets_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                spreadsheet_id TEXT NOT NULL,
+                sheet_name TEXT NOT NULL,
+                report_type TEXT NOT NULL,
+                auto_sync INTEGER NOT NULL DEFAULT 0,
+                last_sync_at TEXT,
+                created_by INTEGER NOT NULL
+            );
             """
         )
         await _migrate_products_table_with_category_fk(db)
@@ -1113,5 +1146,361 @@ async def get_delivery_stats() -> list[dict[str, Any]]:
             )
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+async def create_broadcast(
+    title: str,
+    message_type: str,
+    content: str,
+    created_by: int,
+    status: str = 'draft',
+    scheduled_at: str | None = None,
+) -> int:
+    db = await get_db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO broadcasts (title, message_type, content, status, scheduled_at, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (title, message_type, content, status, scheduled_at, created_by),
+        )
+        await db.commit()
+        row = await (await db.execute('SELECT last_insert_rowid()')).fetchone()
+        return int(row[0])
+    finally:
+        await db.close()
+
+
+async def list_broadcasts() -> list[dict[str, Any]]:
+    db = await get_db()
+    try:
+        rows = await (await db.execute('SELECT * FROM broadcasts ORDER BY id DESC')).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+async def get_broadcast(broadcast_id: int) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        row = await (await db.execute('SELECT * FROM broadcasts WHERE id = ?', (broadcast_id,))).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def update_broadcast_status(
+    broadcast_id: int,
+    status: str,
+    scheduled_at: str | None = None,
+    sent_now: bool = False,
+) -> bool:
+    db = await get_db()
+    try:
+        if sent_now:
+            cursor = await db.execute(
+                """
+                UPDATE broadcasts
+                SET status = ?, sent_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (status, broadcast_id),
+            )
+        elif scheduled_at is None:
+            cursor = await db.execute('UPDATE broadcasts SET status = ? WHERE id = ?', (status, broadcast_id))
+        else:
+            cursor = await db.execute(
+                'UPDATE broadcasts SET status = ?, scheduled_at = ? WHERE id = ?',
+                (status, scheduled_at, broadcast_id),
+            )
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+async def delete_broadcast(broadcast_id: int) -> bool:
+    db = await get_db()
+    try:
+        cursor = await db.execute('DELETE FROM broadcasts WHERE id = ?', (broadcast_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+async def get_due_scheduled_broadcasts() -> list[dict[str, Any]]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT *
+                FROM broadcasts
+                WHERE status = 'scheduled'
+                  AND scheduled_at IS NOT NULL
+                  AND datetime(scheduled_at) <= datetime('now')
+                ORDER BY scheduled_at ASC
+                """
+            )
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+async def get_all_user_ids() -> list[int]:
+    db = await get_db()
+    try:
+        rows = await (await db.execute('SELECT user_id FROM users ORDER BY user_id ASC')).fetchall()
+        return [int(row['user_id']) for row in rows]
+    finally:
+        await db.close()
+
+
+async def upsert_broadcast_recipient(
+    broadcast_id: int,
+    user_id: int,
+    status: str,
+    error: str | None = None,
+) -> None:
+    db = await get_db()
+    try:
+        if status == 'sent':
+            await db.execute(
+                """
+                INSERT INTO broadcast_recipients (broadcast_id, user_id, status, sent_at, error)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+                ON CONFLICT(broadcast_id, user_id) DO UPDATE SET
+                    status = excluded.status,
+                    sent_at = CURRENT_TIMESTAMP,
+                    error = excluded.error
+                """,
+                (broadcast_id, user_id, status, error),
+            )
+        else:
+            await db.execute(
+                """
+                INSERT INTO broadcast_recipients (broadcast_id, user_id, status, sent_at, error)
+                VALUES (?, ?, ?, NULL, ?)
+                ON CONFLICT(broadcast_id, user_id) DO UPDATE SET
+                    status = excluded.status,
+                    error = excluded.error
+                """,
+                (broadcast_id, user_id, status, error),
+            )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_broadcast_stats(broadcast_id: int) -> dict[str, int]:
+    db = await get_db()
+    try:
+        row = await (
+            await db.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent_count,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+                FROM broadcast_recipients
+                WHERE broadcast_id = ?
+                """,
+                (broadcast_id,),
+            )
+        ).fetchone()
+        return {
+            'total': int(row['total'] or 0),
+            'sent': int(row['sent_count'] or 0),
+            'failed': int(row['failed_count'] or 0),
+            'pending': int(row['pending_count'] or 0),
+        }
+    finally:
+        await db.close()
+
+
+async def add_sheets_config(
+    spreadsheet_id: str,
+    sheet_name: str,
+    report_type: str,
+    auto_sync: bool,
+    created_by: int,
+) -> int:
+    db = await get_db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO sheets_config (spreadsheet_id, sheet_name, report_type, auto_sync, created_by)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (spreadsheet_id, sheet_name, report_type, 1 if auto_sync else 0, created_by),
+        )
+        await db.commit()
+        row = await (await db.execute('SELECT last_insert_rowid()')).fetchone()
+        return int(row[0])
+    finally:
+        await db.close()
+
+
+async def list_sheets_configs() -> list[dict[str, Any]]:
+    db = await get_db()
+    try:
+        rows = await (await db.execute('SELECT * FROM sheets_config ORDER BY id DESC')).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+async def get_sheets_config(config_id: int) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        row = await (await db.execute('SELECT * FROM sheets_config WHERE id = ?', (config_id,))).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def delete_sheets_config(config_id: int) -> bool:
+    db = await get_db()
+    try:
+        cursor = await db.execute('DELETE FROM sheets_config WHERE id = ?', (config_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+async def touch_sheets_sync(config_id: int) -> bool:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            'UPDATE sheets_config SET last_sync_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (config_id,),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+async def list_auto_sync_sheets_configs() -> list[dict[str, Any]]:
+    db = await get_db()
+    try:
+        rows = await (await db.execute('SELECT * FROM sheets_config WHERE auto_sync = 1 ORDER BY id ASC')).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+async def get_sales_rows_for_sheets() -> list[list[Any]]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT
+                    substr(created_at, 1, 10) AS day,
+                    COUNT(*) AS orders_count,
+                    COALESCE(SUM(total_price), 0) AS amount,
+                    CASE WHEN COUNT(*) = 0 THEN 0 ELSE COALESCE(SUM(total_price), 0) / COUNT(*) END AS avg_check
+                FROM orders
+                GROUP BY substr(created_at, 1, 10)
+                ORDER BY day DESC
+                """
+            )
+        ).fetchall()
+        result = [['date', 'orders_count', 'amount', 'avg_check']]
+        for row in rows:
+            result.append([row['day'], int(row['orders_count']), float(row['amount']), float(row['avg_check'])])
+        return result
+    finally:
+        await db.close()
+
+
+async def get_orders_rows_for_sheets() -> list[list[Any]]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT o.id, o.user_id, u.username, p.name AS product_name, o.quantity, o.total_price, o.status, o.created_at
+                FROM orders o
+                LEFT JOIN users u ON u.user_id = o.user_id
+                JOIN products p ON p.id = o.product_id
+                ORDER BY o.id DESC
+                """
+            )
+        ).fetchall()
+        result = [['id', 'user', 'product', 'quantity', 'total_price', 'status', 'created_at']]
+        for row in rows:
+            result.append(
+                [
+                    int(row['id']),
+                    f"{row['user_id']} @{row['username'] or '-'}",
+                    row['product_name'],
+                    int(row['quantity']),
+                    float(row['total_price']),
+                    row['status'],
+                    row['created_at'],
+                ]
+            )
+        return result
+    finally:
+        await db.close()
+
+
+async def get_users_rows_for_sheets() -> list[list[Any]]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT u.user_id, u.username, u.created_at, COUNT(o.id) AS orders_count
+                FROM users u
+                LEFT JOIN orders o ON o.user_id = u.user_id
+                GROUP BY u.user_id
+                ORDER BY u.created_at DESC
+                """
+            )
+        ).fetchall()
+        result = [['id', 'username', 'registered_at', 'orders_count']]
+        for row in rows:
+            result.append([int(row['user_id']), row['username'] or '', row['created_at'], int(row['orders_count'])])
+        return result
+    finally:
+        await db.close()
+
+
+async def get_products_rows_for_sheets() -> list[list[Any]]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT
+                    p.id,
+                    p.name,
+                    COALESCE(c.name, 'Без категории') AS category_name,
+                    p.price,
+                    COALESCE(SUM(o.quantity), 0) AS sold_qty
+                FROM products p
+                LEFT JOIN categories c ON c.id = p.category_id
+                LEFT JOIN orders o ON o.product_id = p.id
+                GROUP BY p.id
+                ORDER BY sold_qty DESC, p.id DESC
+                """
+            )
+        ).fetchall()
+        result = [['id', 'name', 'category', 'price', 'sold_qty']]
+        for row in rows:
+            result.append(
+                [int(row['id']), row['name'], row['category_name'], float(row['price']), int(row['sold_qty'])]
+            )
+        return result
     finally:
         await db.close()

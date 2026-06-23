@@ -7,3 +7,4 @@ venv/
 *.log
 data/
 logs/
+credentials.json

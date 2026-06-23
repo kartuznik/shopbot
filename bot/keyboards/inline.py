@@ -71,6 +71,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text='👥 Пользователи', callback_data='admin_users')],
             [InlineKeyboardButton(text='📊 Аналитика', callback_data='admin_analytics')],
             [InlineKeyboardButton(text='🚚 Доставка', callback_data='admin_delivery')],
+            [InlineKeyboardButton(text='📢 Рассылки', callback_data='admin_broadcast')],
         ]
     )
 

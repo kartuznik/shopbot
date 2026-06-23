@@ -26,6 +26,8 @@ ShopBot - готовый Telegram-бот для онлайн-магазина с
 - статистика продаж и пользователей;
 - управление зонами доставки;
 - просмотр платежей;
+- массовые рассылки пользователям;
+- интеграция с Google Sheets (ручной и авто-sync);
 - health-мониторинг (`/health`).
 
 ### Веб-админка
@@ -129,6 +131,18 @@ python -m web.app
 5. Настройте webhook URL:
    - `http://<SERVER_IP>/webhook/yookassa` (через Nginx reverse proxy).
 
+## Настройка Google Sheets API
+
+1. Создайте проект в Google Cloud.
+2. Включите Google Sheets API и Google Drive API.
+3. Создайте Service Account.
+4. Скачайте JSON-ключ и сохраните как:
+   - `/opt/bots/shopbot/credentials.json`
+5. Пример структуры ключа:
+   - `credentials_example.json`
+6. Добавьте email сервисного аккаунта в доступ нужной таблицы Google Sheets (Editor).
+7. В боте выполните `/sheets_setup` для создания конфигурации синхронизации.
+
 ## Использование
 
 ### Команды пользователя
@@ -151,6 +165,8 @@ python -m web.app
 - `/users`;
 - `/stats`, `/stats_sales`, `/stats_users`;
 - `/payments`, `/payment_details`;
+- `/broadcast`, `/broadcasts`, `/broadcast_details`, `/broadcast_cancel`, `/broadcast_delete`;
+- `/sheets_setup`, `/sheets_list`, `/sheets_sync`, `/sheets_delete`;
 - `/add_delivery_zone`, `/list_delivery_zones`, `/delete_delivery_zone`, `/delivery_stats`;
 - `/product_reviews`, `/delete_review`;
 - `/health`.
@@ -186,6 +202,7 @@ shopbot/
 │   ├── static/
 │   └── shopbot-web.service
 ├── data/
+├── credentials_example.json
 ├── requirements.txt
 └── README.md
 ```
@@ -248,6 +265,11 @@ ufw reload
 ### Не создается платеж YooKassa
 - Проверьте `YUKASSA_SHOP_ID` и `YUKASSA_SECRET_KEY`;
 - Проверьте доступ webhook URL снаружи.
+
+### Google Sheets не синхронизируется
+- Проверьте наличие `credentials.json` в корне проекта;
+- Проверьте, что сервисный аккаунт добавлен в доступ к таблице;
+- Проверьте ручной запуск `/sheets_sync <id>`.
 
 ### Не открывается веб-админка
 - Убедитесь, что запущен `shopbot-web`;

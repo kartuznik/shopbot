@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     ADMIN_IDS: list[int] = Field(default_factory=list)
     DB_PATH: str = Field(default='data/shopbot.db')
     LANGUAGE: str = Field(default='ru')
+    YUKASSA_SHOP_ID: str = Field(default='')
+    YUKASSA_SECRET_KEY: str = Field(default='')
 
     @field_validator('ADMIN_IDS', mode='before')
     @classmethod

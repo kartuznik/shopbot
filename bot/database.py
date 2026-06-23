@@ -93,6 +93,36 @@ async def init_db() -> None:
                 FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
                 FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL UNIQUE,
+                amount REAL NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'RUB',
+                payment_url TEXT,
+                payment_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                paid_at TEXT,
+                FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS delivery_zones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                zone_name TEXT NOT NULL,
+                cost REAL NOT NULL,
+                description TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS user_addresses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                address TEXT NOT NULL,
+                zone_id INTEGER,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (zone_id) REFERENCES delivery_zones(id) ON DELETE SET NULL
+            );
             """
         )
         await _migrate_products_table_with_category_fk(db)
@@ -329,7 +359,9 @@ async def clear_cart(user_id: int) -> None:
         await db.close()
 
 
-async def create_order_from_cart(user_id: int) -> dict[str, Any]:
+async def create_order_from_cart(
+    user_id: int, address: str | None = None, shipping_cost: float = 0.0
+) -> dict[str, Any]:
     items = await get_cart_items(user_id)
     if not items:
         return {'count': 0, 'order_ids': [], 'items': [], 'total': 0.0}
@@ -340,13 +372,14 @@ async def create_order_from_cart(user_id: int) -> dict[str, Any]:
     total_sum = 0.0
     try:
         for item in items:
-            total = float(item['price']) * int(item['quantity'])
+            item_total = float(item['price']) * int(item['quantity'])
+            total = item_total + float(shipping_cost)
             await db.execute(
                 """
-                INSERT INTO orders (user_id, product_id, quantity, total_price, status, shipping_cost)
-                VALUES (?, ?, ?, ?, 'new', 0)
+                INSERT INTO orders (user_id, product_id, quantity, total_price, status, shipping_cost, address)
+                VALUES (?, ?, ?, ?, 'new', ?, ?)
                 """,
-                (user_id, item['product_id'], item['quantity'], total),
+                (user_id, item['product_id'], item['quantity'], total, shipping_cost, address),
             )
             row = await (await db.execute('SELECT last_insert_rowid()')).fetchone()
             order_ids.append(int(row[0]))
@@ -354,7 +387,9 @@ async def create_order_from_cart(user_id: int) -> dict[str, Any]:
                 {
                     'name': item['name'],
                     'quantity': int(item['quantity']),
-                    'line_total': total,
+                    'line_total': item_total,
+                    'shipping_cost': float(shipping_cost),
+                    'final_total': total,
                 }
             )
             total_sum += total
@@ -509,6 +544,25 @@ async def get_order_details(order_id: int) -> dict[str, Any] | None:
                     o.created_at
                 FROM orders o
                 LEFT JOIN users u ON u.user_id = o.user_id
+                JOIN products p ON p.id = o.product_id
+                WHERE o.id = ?
+                """,
+                (order_id,),
+            )
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def get_order_basic(order_id: int) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        row = await (
+            await db.execute(
+                """
+                SELECT o.id, o.user_id, o.total_price, o.status, p.name AS product_name
+                FROM orders o
                 JOIN products p ON p.id = o.product_id
                 WHERE o.id = ?
                 """,
@@ -834,5 +888,230 @@ async def get_users_stats() -> dict[str, Any]:
             'total_users': total_users,
             'conversion': (users_with_orders / total_users * 100) if total_users else 0.0,
         }
+    finally:
+        await db.close()
+
+
+async def save_payment(
+    order_id: int,
+    amount: float,
+    payment_url: str,
+    payment_id: str,
+    currency: str = 'RUB',
+    status: str = 'pending',
+) -> int:
+    db = await get_db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO payments (order_id, amount, currency, payment_url, payment_id, status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(order_id) DO UPDATE SET
+                amount = excluded.amount,
+                currency = excluded.currency,
+                payment_url = excluded.payment_url,
+                payment_id = excluded.payment_id,
+                status = excluded.status
+            """,
+            (order_id, amount, currency, payment_url, payment_id, status),
+        )
+        await db.commit()
+        row = await (await db.execute('SELECT id FROM payments WHERE order_id = ?', (order_id,))).fetchone()
+        return int(row[0])
+    finally:
+        await db.close()
+
+
+async def get_payment_by_order(order_id: int) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        row = await (await db.execute('SELECT * FROM payments WHERE order_id = ?', (order_id,))).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def get_payment_by_payment_id(payment_id: str) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        row = await (await db.execute('SELECT * FROM payments WHERE payment_id = ?', (payment_id,))).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def list_payments() -> list[dict[str, Any]]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT p.*, o.user_id
+                FROM payments p
+                LEFT JOIN orders o ON o.id = p.order_id
+                ORDER BY p.id DESC
+                """
+            )
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+async def update_payment_status(order_id: int, status: str, paid: bool = False) -> bool:
+    db = await get_db()
+    try:
+        if paid:
+            cursor = await db.execute(
+                """
+                UPDATE payments
+                SET status = ?, paid_at = CURRENT_TIMESTAMP
+                WHERE order_id = ?
+                """,
+                (status, order_id),
+            )
+        else:
+            cursor = await db.execute('UPDATE payments SET status = ? WHERE order_id = ?', (status, order_id))
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+async def add_delivery_zone(zone_name: str, cost: float, description: str | None = None) -> int:
+    db = await get_db()
+    try:
+        await db.execute(
+            'INSERT INTO delivery_zones (zone_name, cost, description) VALUES (?, ?, ?)',
+            (zone_name.strip(), cost, (description or '').strip() or None),
+        )
+        await db.commit()
+        row = await (await db.execute('SELECT last_insert_rowid()')).fetchone()
+        return int(row[0])
+    finally:
+        await db.close()
+
+
+async def get_delivery_zones() -> list[dict[str, Any]]:
+    db = await get_db()
+    try:
+        rows = await (await db.execute('SELECT * FROM delivery_zones ORDER BY id ASC')).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+async def delete_delivery_zone(zone_id: int) -> bool:
+    db = await get_db()
+    try:
+        cursor = await db.execute('DELETE FROM delivery_zones WHERE id = ?', (zone_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+async def add_user_address(user_id: int, address: str, zone_id: int, is_default: bool = False) -> int:
+    db = await get_db()
+    try:
+        if is_default:
+            await db.execute('UPDATE user_addresses SET is_default = 0 WHERE user_id = ?', (user_id,))
+        await db.execute(
+            """
+            INSERT INTO user_addresses (user_id, address, zone_id, is_default)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, address.strip(), zone_id, 1 if is_default else 0),
+        )
+        await db.commit()
+        row = await (await db.execute('SELECT last_insert_rowid()')).fetchone()
+        return int(row[0])
+    finally:
+        await db.close()
+
+
+async def get_user_addresses(user_id: int) -> list[dict[str, Any]]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT a.*, z.zone_name, z.cost
+                FROM user_addresses a
+                LEFT JOIN delivery_zones z ON z.id = a.zone_id
+                WHERE a.user_id = ?
+                ORDER BY a.is_default DESC, a.id DESC
+                """,
+                (user_id,),
+            )
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await db.close()
+
+
+async def get_user_address(address_id: int, user_id: int) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        row = await (
+            await db.execute(
+                """
+                SELECT a.*, z.zone_name, z.cost
+                FROM user_addresses a
+                LEFT JOIN delivery_zones z ON z.id = a.zone_id
+                WHERE a.id = ? AND a.user_id = ?
+                """,
+                (address_id, user_id),
+            )
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def delete_user_address(address_id: int, user_id: int) -> bool:
+    db = await get_db()
+    try:
+        cursor = await db.execute('DELETE FROM user_addresses WHERE id = ? AND user_id = ?', (address_id, user_id))
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+async def set_default_user_address(address_id: int, user_id: int) -> bool:
+    db = await get_db()
+    try:
+        await db.execute('UPDATE user_addresses SET is_default = 0 WHERE user_id = ?', (user_id,))
+        cursor = await db.execute(
+            'UPDATE user_addresses SET is_default = 1 WHERE id = ? AND user_id = ?',
+            (address_id, user_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db.close()
+
+
+async def get_delivery_stats() -> list[dict[str, Any]]:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT
+                    COALESCE(z.zone_name, 'Не определена') AS zone_name,
+                    COUNT(o.id) AS orders_count,
+                    COALESCE(SUM(o.shipping_cost), 0) AS shipping_total,
+                    COALESCE(SUM(o.total_price), 0) AS sales_total
+                FROM orders o
+                LEFT JOIN user_addresses a ON a.address = o.address AND a.user_id = o.user_id
+                LEFT JOIN delivery_zones z ON z.id = a.zone_id
+                GROUP BY COALESCE(z.zone_name, 'Не определена')
+                ORDER BY orders_count DESC
+                """
+            )
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         await db.close()

@@ -4,11 +4,9 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
-from bot.config import get_settings
 from bot.database import (
     add_to_cart,
     clear_cart,
-    create_order_from_cart,
     get_categories,
     get_cart_items,
     get_product,
@@ -31,27 +29,6 @@ router = Router()
 
 def _status_label(status: str) -> str:
     return ORDER_STATUS_LABELS.get(status, status)
-
-
-async def _notify_admins_new_order(message: Message, order_data: dict) -> None:
-    if not message.from_user:
-        return
-    settings = get_settings()
-    order_no = order_data['order_ids'][0] if order_data['order_ids'] else '-'
-    username = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
-    items_text = ', '.join(
-        f"{item['name']} x{item['quantity']} ({item['line_total']:.2f})" for item in order_data['items']
-    )
-    text = (
-        f"🆕 Новый заказ #{order_no} от {username}\n"
-        f"Товары: {items_text}\n"
-        f"Сумма: {order_data['total']:.2f}₽"
-    )
-    for admin_id in settings.ADMIN_IDS:
-        try:
-            await message.bot.send_message(chat_id=admin_id, text=text)
-        except Exception:
-            continue
 
 
 @router.message(CommandStart())
@@ -248,14 +225,3 @@ async def callback_clear_cart(callback: CallbackQuery) -> None:
     await callback.message.answer('Корзина очищена.')
 
 
-@router.callback_query(F.data == 'checkout_cart')
-async def callback_checkout(callback: CallbackQuery) -> None:
-    if not callback.from_user:
-        return
-    count = await create_order_from_cart(callback.from_user.id)
-    await callback.answer()
-    if count['count'] == 0:
-        await callback.message.answer('Корзина пуста, нечего оформлять.')
-    else:
-        await callback.message.answer(f"✅ Заказ оформлен. Позиции: {count['count']}")
-        await _notify_admins_new_order(callback.message, count)

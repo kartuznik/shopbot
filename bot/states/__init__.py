@@ -16,3 +16,13 @@ class OrderStates(StatesGroup):
 
 class ReviewStates(StatesGroup):
     comment = State()
+
+
+class DeliveryAddressStates(StatesGroup):
+    address = State()
+    zone = State()
+
+
+class DeliveryZoneStates(StatesGroup):
+    zone_name = State()
+    zone_cost = State()

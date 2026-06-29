@@ -5,7 +5,7 @@ import logging
 import shutil
 import sqlite3
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -36,11 +36,19 @@ class BotHealthMonitor:
         self.last_resources_check: datetime | None = None
         self.last_db_ok = False
         self.last_db_error: str | None = None
+        self.last_bot_error: str | None = None
+        self.last_bot_error_kind: str | None = None
         self.free_disk_bytes = 0
         self.active_users = 0
         self.last_critical_error: str | None = None
         self.last_critical_at: datetime | None = None
         self.last_heal_at: datetime | None = None
+        self.last_restart_alert_at: datetime | None = None
+
+        self.consecutive_bot_errors = 0
+        self.max_consecutive_bot_errors = 5
+        self.retry_delays = [5, 10, 20, 40]
+        self.restart_alert_threshold = 10
 
         self._stop_event = asyncio.Event()
         self._is_healing = False
@@ -89,14 +97,167 @@ class BotHealthMonitor:
         try:
             await self.bot.get_me()
             self.bot_online = True
+            if self.consecutive_bot_errors:
+                self._log(
+                    logging.INFO,
+                    'BOT',
+                    f'Проверка get_me успешна, сбрасываю счетчик ошибок ({self.consecutive_bot_errors} -> 0)',
+                )
+            self.consecutive_bot_errors = 0
+            self.last_bot_error = None
+            self.last_bot_error_kind = None
             self._log(logging.INFO, 'BOT', 'Проверка get_me успешна')
             return True
         except Exception as error:
             self.bot_online = False
-            self.last_critical_error = f'bot_unreachable: {error}'
-            self.last_critical_at = datetime.now(tz=UTC)
-            self._log(logging.ERROR, 'BOT', f'Бот не отвечает: {error}')
+            self.last_bot_error = str(error)
+            self.last_bot_error_kind = self._classify_bot_error(self.last_bot_error)
+            self._log(
+                logging.WARNING,
+                'BOT',
+                f'Бот не отвечает (тип={self.last_bot_error_kind}): {self.last_bot_error}',
+            )
             return False
+
+    @staticmethod
+    def _is_transient_bot_error(error_text: str) -> bool:
+        text = error_text.lower()
+        transient_markers = (
+            'bad gateway',
+            'gateway timeout',
+            'request timeout',
+            'timeout error',
+            'timed out',
+            'connection reset',
+            'temporarily unavailable',
+            'server says',
+            'networkerror',
+        )
+        return any(marker in text for marker in transient_markers)
+
+    @staticmethod
+    def _is_persistent_bot_error(error_text: str) -> bool:
+        text = error_text.lower()
+        persistent_markers = (
+            'unauthorized',
+            'forbidden',
+            'token is invalid',
+            'invalid token',
+            'not found',
+            'network is unreachable',
+            'no route to host',
+            'name or service not known',
+            'temporary failure in name resolution',
+        )
+        return any(marker in text for marker in persistent_markers)
+
+    def _classify_bot_error(self, error_text: str) -> str:
+        if self._is_persistent_bot_error(error_text):
+            return 'persistent'
+        if self._is_transient_bot_error(error_text):
+            return 'transient'
+        return 'transient'
+
+    async def _retry_bot_recovery(self) -> tuple[bool, str | None, str | None]:
+        last_error: str | None = None
+        last_error_kind: str | None = None
+        for attempt, delay in enumerate(self.retry_delays, start=1):
+            self._log(
+                logging.INFO,
+                'BOT',
+                (
+                    f'Попытка восстановления {attempt}/{len(self.retry_delays)} '
+                    f'через {delay}с перед heal()'
+                ),
+            )
+            await asyncio.sleep(delay)
+            try:
+                await self.bot.get_me()
+                self.bot_online = True
+                self.consecutive_bot_errors = 0
+                self.last_bot_error = None
+                self.last_bot_error_kind = None
+                self._log(logging.INFO, 'BOT', 'Восстановление успешно, перезапуск не требуется')
+                return True, None, None
+            except Exception as error:
+                last_error = str(error)
+                last_error_kind = self._classify_bot_error(last_error)
+                self.bot_online = False
+                self.last_bot_error = last_error
+                self.last_bot_error_kind = last_error_kind
+                self._log(
+                    logging.WARNING,
+                    'BOT',
+                    (
+                        f'Попытка {attempt} неуспешна '
+                        f'(тип={last_error_kind}): {last_error}'
+                    ),
+                )
+                if last_error_kind == 'persistent':
+                    self._log(
+                        logging.ERROR,
+                        'BOT',
+                        'Обнаружена устойчивая ошибка во время ретраев, прекращаю восстановление',
+                    )
+                    break
+        return False, last_error, last_error_kind
+
+    async def _count_restarts_last_hour(self) -> int | None:
+        process = await asyncio.create_subprocess_exec(
+            'journalctl',
+            '-u',
+            'shopbot',
+            '--since',
+            '1 hour ago',
+            '--no-pager',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            self._log(
+                logging.ERROR,
+                'RESTARTS',
+                f'Не удалось прочитать journalctl для restart rate: {stderr.decode(errors="ignore").strip()}',
+            )
+            return None
+        text = stdout.decode(errors='ignore')
+        return text.count('Scheduled restart job')
+
+    async def _check_restart_frequency(self) -> None:
+        restart_count = await self._count_restarts_last_hour()
+        if restart_count is None:
+            return
+        self._log(
+            logging.INFO,
+            'RESTARTS',
+            f'Перезапусков shopbot за последний час: {restart_count}',
+        )
+        if restart_count <= self.restart_alert_threshold:
+            return
+
+        self._log(
+            logging.ERROR,
+            'RESTARTS',
+            (
+                'Высокая частота перезапусков: '
+                f'{restart_count} за последний час (порог {self.restart_alert_threshold})'
+            ),
+        )
+        now = datetime.now(tz=UTC)
+        should_notify = (
+            self.last_restart_alert_at is None
+            or now - self.last_restart_alert_at >= timedelta(minutes=30)
+        )
+        if should_notify:
+            await self.notify_admins(
+                (
+                    '⚠️ ShopBot часто перезапускается: '
+                    f'{restart_count} раз(а) за последний час. '
+                    'Проверьте стабильность Telegram/API и состояние сервиса.'
+                )
+            )
+            self.last_restart_alert_at = now
 
     def _check_db_sync(self) -> tuple[bool, str | None]:
         integrity = db_integrity_check(self.db_path)
@@ -190,6 +351,7 @@ class BotHealthMonitor:
         last_bot = 0.0
         last_db = 0.0
         last_resources = 0.0
+        last_restart_check = 0.0
         while not self._stop_event.is_set():
             now = asyncio.get_running_loop().time()
             is_ok = True
@@ -198,8 +360,58 @@ class BotHealthMonitor:
             if now - last_bot >= 30:
                 last_bot = now
                 if not await self.check_bot_alive():
-                    is_ok = False
-                    critical_reason = self.last_critical_error or 'bot_check_failed'
+                    self.consecutive_bot_errors += 1
+                    error_text = self.last_bot_error or 'bot_check_failed'
+                    error_kind = self.last_bot_error_kind or self._classify_bot_error(error_text)
+                    self._log(
+                        logging.WARNING,
+                        'BOT',
+                        (
+                            'Ошибка проверки бота '
+                            f'({self.consecutive_bot_errors}/{self.max_consecutive_bot_errors}), '
+                            f'тип={error_kind}'
+                        ),
+                    )
+
+                    if error_kind == 'persistent':
+                        is_ok = False
+                        critical_reason = f'bot_unreachable_persistent: {error_text}'
+                        self._log(
+                            logging.ERROR,
+                            'BOT',
+                            f'Перезапуск по persistent-ошибке: {critical_reason}',
+                        )
+                    elif self.consecutive_bot_errors >= self.max_consecutive_bot_errors:
+                        self._log(
+                            logging.ERROR,
+                            'BOT',
+                            (
+                                'Достигнут лимит последовательных ошибок '
+                                f'({self.max_consecutive_bot_errors}), запускаю retry/backoff'
+                            ),
+                        )
+                        recovered, retry_error, retry_error_kind = await self._retry_bot_recovery()
+                        if not recovered:
+                            is_ok = False
+                            final_error = retry_error or error_text
+                            final_kind = retry_error_kind or 'transient'
+                            critical_reason = f'bot_unreachable_{final_kind}: {final_error}'
+                            self._log(
+                                logging.CRITICAL,
+                                'BOT',
+                                (
+                                    'Все попытки восстановления исчерпаны, '
+                                    f'причина перезапуска: {critical_reason}'
+                                ),
+                            )
+                    else:
+                        is_ok = False
+                        self._log(
+                            logging.INFO,
+                            'BOT',
+                            'Транзиентная ошибка: жду следующие проверки без перезапуска',
+                        )
+                        critical_reason = None
 
             if now - last_db >= 60:
                 last_db = now
@@ -213,8 +425,14 @@ class BotHealthMonitor:
                     is_ok = False
                     critical_reason = self.last_critical_error or 'resource_check_failed'
 
+            if now - last_restart_check >= 300:
+                last_restart_check = now
+                await self._check_restart_frequency()
+
             if critical_reason is not None:
                 self._degraded = True
+                self.last_critical_error = critical_reason
+                self.last_critical_at = datetime.now(tz=UTC)
                 await self.heal(critical_reason)
             elif is_ok and self._degraded:
                 self._degraded = False
@@ -240,6 +458,8 @@ class BotHealthMonitor:
             'last_critical_error': self.last_critical_error,
             'last_critical_at': self.last_critical_at,
             'last_heal_at': self.last_heal_at,
+            'consecutive_bot_errors': self.consecutive_bot_errors,
+            'max_consecutive_bot_errors': self.max_consecutive_bot_errors,
         }
 
 

@@ -1,5 +1,11 @@
 # ShopBot - Telegram-магазин с веб-админкой
 
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)]()
+[![aiogram 3.x](https://img.shields.io/badge/aiogram-3.x-green.svg)]()
+[![YooKassa](https://img.shields.io/badge/yookassa-integration-purple.svg)]()
+[![Docker ready](https://img.shields.io/badge/docker-ready-blue.svg)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)]()
+
 ShopBot - готовый Telegram-бот для онлайн-магазина с каталогом, корзиной, заказами, оплатой YooKassa, доставкой, отзывами и веб-админкой на Flask.
 
 ## Что это и для чего

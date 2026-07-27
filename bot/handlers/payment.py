@@ -18,6 +18,7 @@ from bot.database import (
     list_payments,
     save_payment,
 )
+from bot.keyboards.inline import demo_pdf_download_keyboard
 
 router = Router()
 
@@ -30,6 +31,26 @@ def payment_keyboard(order_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text='💳 Оплатить', callback_data=f'pay_order:{order_id}')]]
     )
+
+
+@router.callback_query(F.data == 'demo_buy_pdf')
+async def callback_demo_buy_pdf(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    await callback.message.answer("⏳ Переходим к оплате...")
+    await asyncio.sleep(2)
+    await callback.message.answer(
+        "✅ Оплата прошла! Вот ваш PDF.",
+        reply_markup=demo_pdf_download_keyboard(),
+    )
+
+
+@router.callback_query(F.data == 'download_pdf')
+async def callback_download_pdf(callback: CallbackQuery) -> None:
+    await callback.answer("Загрузка началась...", show_alert=False)
+    if callback.message is not None:
+        await callback.message.answer("📥 Ваш PDF-гайд готов к скачиванию (демо-режим).")
 
 
 def _create_payment_sync(order_id: int, amount: float, description: str) -> tuple[str, str]:

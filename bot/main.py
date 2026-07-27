@@ -34,13 +34,14 @@ async def main() -> None:
 
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
     dp = Dispatcher()
-    dp.include_router(admin.router)
-    dp.include_router(analytics.router)
-    dp.include_router(broadcast.router)
-    dp.include_router(delivery.router)
+    # Demo mode for FL.ru: keep only user + payment chain active.
+    # dp.include_router(admin.router)
+    # dp.include_router(analytics.router)
+    # dp.include_router(broadcast.router)
+    # dp.include_router(delivery.router)
     dp.include_router(payment.router)
-    dp.include_router(reviews.router)
-    dp.include_router(sheets.router)
+    # dp.include_router(reviews.router)
+    # dp.include_router(sheets.router)
     dp.include_router(user.router)
 
     monitor = BotHealthMonitor(

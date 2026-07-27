@@ -13,6 +13,22 @@ ORDER_STATUS_LABELS = {
 }
 
 
+def demo_pdf_buy_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text='📄 Купить PDF-гайд (100 ₽)', callback_data='demo_buy_pdf')]
+        ]
+    )
+
+
+def demo_pdf_download_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text='📥 Скачать', callback_data='download_pdf')]
+        ]
+    )
+
+
 def catalog_categories_keyboard(categories: list[dict]) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=category['name'], callback_data=f"catalog_category:{category['id']}")]

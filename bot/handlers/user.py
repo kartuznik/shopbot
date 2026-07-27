@@ -21,6 +21,7 @@ from bot.keyboards.inline import (
     cart_keyboard,
     catalog_categories_keyboard,
     catalog_products_keyboard,
+    demo_pdf_buy_keyboard,
     product_keyboard_with_reviews,
 )
 
@@ -32,6 +33,21 @@ def _status_label(status: str) -> str:
 
 
 @router.message(CommandStart())
+async def cmd_start_demo(message: Message) -> None:
+    if not message.from_user:
+        return
+    await upsert_user(message.from_user.id, message.from_user.username)
+    await message.answer(
+        (
+            "👋 Добро пожаловать в демо ShopBot.\n\n"
+            "📄 Сегодня доступен один товар:\n"
+            "PDF-гайд по продажам в Telegram — 100 ₽.\n\n"
+            "Нажмите кнопку ниже, чтобы пройти цепочку покупки."
+        ),
+        reply_markup=demo_pdf_buy_keyboard(),
+    )
+
+
 @router.message(Command('catalog'))
 async def cmd_catalog(message: Message) -> None:
     if not message.from_user:

@@ -964,15 +964,6 @@ async def get_payment_by_order(order_id: int) -> dict[str, Any] | None:
         await db.close()
 
 
-async def get_payment_by_payment_id(payment_id: str) -> dict[str, Any] | None:
-    db = await get_db()
-    try:
-        row = await (await db.execute('SELECT * FROM payments WHERE payment_id = ?', (payment_id,))).fetchone()
-        return dict(row) if row else None
-    finally:
-        await db.close()
-
-
 async def list_payments() -> list[dict[str, Any]]:
     db = await get_db()
     try:
@@ -987,26 +978,6 @@ async def list_payments() -> list[dict[str, Any]]:
             )
         ).fetchall()
         return [dict(row) for row in rows]
-    finally:
-        await db.close()
-
-
-async def update_payment_status(order_id: int, status: str, paid: bool = False) -> bool:
-    db = await get_db()
-    try:
-        if paid:
-            cursor = await db.execute(
-                """
-                UPDATE payments
-                SET status = ?, paid_at = CURRENT_TIMESTAMP
-                WHERE order_id = ?
-                """,
-                (status, order_id),
-            )
-        else:
-            cursor = await db.execute('UPDATE payments SET status = ? WHERE order_id = ?', (status, order_id))
-        await db.commit()
-        return cursor.rowcount > 0
     finally:
         await db.close()
 

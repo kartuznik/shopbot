@@ -11,6 +11,7 @@ from aiogram import Bot
 from flask import Flask, jsonify, request
 
 from bot.config import get_settings
+from bot.webhook_security import client_ip, fetch_payment_status, is_yookassa_ip, verify_signature
 
 logger = logging.getLogger('shopbot.webhook')
 
@@ -77,6 +78,22 @@ def create_app() -> Flask:
 
     @app.post('/webhook/yookassa')
     def webhook_yookassa() -> tuple[Any, int]:
+        settings = get_settings()
+        sender = client_ip(
+            request.remote_addr,
+            request.headers.get('X-Real-IP'),
+            request.headers.get('X-Forwarded-For'),
+        )
+
+        if not verify_signature(request.args.get('token'), settings.WEBHOOK_SECRET_TOKEN):
+            reason = 'секрет не задан' if not settings.WEBHOOK_SECRET_TOKEN else 'подпись не совпала'
+            logger.warning('Уведомление отклонено (%s), отправитель %s', reason, sender)
+            return jsonify({'ok': False, 'error': 'unauthorized'}), 400
+
+        if not is_yookassa_ip(sender):
+            logger.warning('Уведомление отклонено: адрес %s вне подсетей ЮKassa', sender)
+            return jsonify({'ok': False, 'error': 'unauthorized'}), 400
+
         payload = request.get_json(silent=True) or {}
         obj = payload.get('object') or {}
         status = str(obj.get('status') or '')
@@ -87,6 +104,16 @@ def create_app() -> Flask:
 
         if not payment_id and order_id is None:
             return jsonify({'ok': False, 'error': 'invalid payload'}), 400
+
+        confirmed_status = fetch_payment_status(payment_id)
+        if confirmed_status is not None and confirmed_status != status:
+            logger.warning(
+                'Уведомление отклонено: платёж %s в кассе имеет статус %s, а не %s',
+                payment_id,
+                confirmed_status,
+                status,
+            )
+            return jsonify({'ok': False, 'error': 'status mismatch'}), 400
 
         try:
             resolved_order_id = _update_payment_and_order(payment_id, status, order_id)
@@ -111,6 +138,8 @@ def start_webhook_server(bot: Bot, loop: asyncio.AbstractEventLoop) -> threading
     host = settings.WEBHOOK_HOST
     port = settings.WEBHOOK_PORT
     logger.info('Webhook server binds %s:%s', host, port)
+    if not settings.WEBHOOK_SECRET_TOKEN:
+        logger.error('WEBHOOK_SECRET_TOKEN не задан: уведомления ЮKassa будут отклоняться с 400')
 
     def _run() -> None:
         app.run(host=host, port=port, debug=False, use_reloader=False)

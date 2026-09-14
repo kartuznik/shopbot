@@ -43,7 +43,34 @@ systemctl status shopbot-web
 
 - Внешний путь: `/webhook/yookassa`
 - Upstream: `127.0.0.1:8080`
-- Публичный URL вида `https://<YOUR_DOMAIN>/webhook/yookassa` укажите в кабинете YooKassa.
+- Публичный URL вида `https://<YOUR_DOMAIN>/webhook/yookassa?token=<WEBHOOK_SECRET_TOKEN>` укажите в кабинете YooKassa.
+- Проксируйте `X-Real-IP $remote_addr` — на нём держится проверка отправителя (см. ниже).
+
+> YooKassa шлёт уведомления только на HTTPS:443 или :8443. Текущий Nginx слушает `80` без TLS, поэтому в бою касса до эндпоинта не достучится. Блокер зафиксирован и закрывается отдельной задачей.
+
+### Безопасность вебхука
+
+YooKassa не подписывает уведомления — [документация](https://yookassa.ru/developers/using-api/webhooks) предлагает проверять статус объекта и IP отправителя. Эндпоинт проверяет три вещи подряд, и любая непройденная означает `400`, запись в лог и отсутствие изменений в базе:
+
+1. **Подпись адреса** — `?token=` сверяется с `WEBHOOK_SECRET_TOKEN` (SENSITIVE_KEYS) через `hmac.compare_digest`, не через `==`.
+2. **IP отправителя** — только официальные подсети кассы; реальный адрес берётся из `X-Real-IP` и только когда запрос пришёл с петли (от Nginx).
+3. **Статус в кассе** — `GET /v3/payments/{id}` с Basic Auth `YUKASSA_SHOP_ID:YUKASSA_SECRET_KEY`; расхождение статуса или неизвестный платёж отбрасываются.
+
+Диагностика отказов — по логу `shopbot`:
+
+```bash
+journalctl -u shopbot --since "1 hour ago" | grep -i "Уведомление отклонено"
+```
+
+Сообщение называет причину (`подпись не совпала`, `секрет не задан`, адрес вне подсетей, расхождение статуса). Само значение секрета в логи не попадает.
+
+Проверка «плохая подпись даёт 400» с самого сервера:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  'http://127.0.0.1:8080/webhook/yookassa?token=wrong' \
+  -H 'Content-Type: application/json' -H 'X-Real-IP: 185.71.76.1' -d '{}'   # ожидаем 400
+```
 
 ### Firewall (типовой)
 
@@ -93,6 +120,7 @@ systemctl start shopbot shopbot-web
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Новый токен в BotFather → `.env` → `systemctl restart shopbot` |
 | `YUKASSA_SHOP_ID` / `YUKASSA_SECRET_KEY` | Обновить в кабинете и `.env` → restart `shopbot` → проверить webhook |
+| `WEBHOOK_SECRET_TOKEN` | `openssl rand -hex 32` → `.env` → обновить URL уведомлений в кабинете YooKassa (`?token=`) → `systemctl restart shopbot`. До обновления URL касса получает `400` и повторяет доставку сутки, поэтому меняйте оба места в одно окно |
 | `ADMIN_WEB_PASSWORD` | Обновить `.env` → `systemctl restart shopbot-web` |
 | `ADMIN_IDS` | Обновить список → restart `shopbot` |
 | Google `credentials.json` | Новый JSON service account → права на таблицу → `/sheets_sync` |

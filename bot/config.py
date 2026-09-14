@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # Webhook принимает трафик только от Nginx по петле; наружу его публикует reverse proxy.
     WEBHOOK_HOST: str = Field(default='127.0.0.1')
     WEBHOOK_PORT: int = Field(default=8080)
+    # Секрет в query string адреса уведомлений. Пустое значение закрывает эндпоинт целиком.
+    WEBHOOK_SECRET_TOKEN: str = Field(default='')
 
     @field_validator('ADMIN_IDS', mode='before')
     @classmethod

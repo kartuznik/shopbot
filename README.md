@@ -205,7 +205,7 @@ source venv/bin/activate
 python -m bot.main
 ```
 
-Webhook YooKassa слушает **`:8080`** (внутри процесса бота).
+Webhook YooKassa слушает **`127.0.0.1:8080`** (внутри процесса бота; адрес и порт задаются `WEBHOOK_HOST`/`WEBHOOK_PORT`). Наружу его публикует только Nginx — bind на `0.0.0.0` обходит reverse proxy и запрещён.
 
 ### Веб-админка
 

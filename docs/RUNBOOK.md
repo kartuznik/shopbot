@@ -37,7 +37,7 @@ systemctl status shopbot-web
 
 - Бот отвечает в Telegram (`/start`, `/health` для админа).
 - Админка открывается на `:5001`.
-- Webhook слушает `127.0.0.1:8080` (или `0.0.0.0:8080` внутри процесса — снаружи только через Nginx).
+- Webhook слушает `127.0.0.1:8080` (адрес задаётся `WEBHOOK_HOST`/`WEBHOOK_PORT` в `.env`). Снаружи — только через Nginx; bind на `0.0.0.0` открывает порт в обход reverse proxy и запрещён.
 
 ### Nginx (webhook)
 

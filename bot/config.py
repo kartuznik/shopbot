@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     YUKASSA_SHOP_ID: str = Field(default='')
     YUKASSA_SECRET_KEY: str = Field(default='')
     ADMIN_WEB_PASSWORD: str = Field(default='')
+    # Webhook принимает трафик только от Nginx по петле; наружу его публикует reverse proxy.
+    WEBHOOK_HOST: str = Field(default='127.0.0.1')
+    WEBHOOK_PORT: int = Field(default=8080)
 
     @field_validator('ADMIN_IDS', mode='before')
     @classmethod

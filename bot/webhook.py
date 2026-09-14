@@ -107,9 +107,13 @@ def start_webhook_server(bot: Bot, loop: asyncio.AbstractEventLoop) -> threading
     _loop = loop
 
     app = create_app()
+    settings = get_settings()
+    host = settings.WEBHOOK_HOST
+    port = settings.WEBHOOK_PORT
+    logger.info('Webhook server binds %s:%s', host, port)
 
     def _run() -> None:
-        app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
+        app.run(host=host, port=port, debug=False, use_reloader=False)
 
     thread = threading.Thread(target=_run, name='shopbot-webhook', daemon=True)
     thread.start()

@@ -39,7 +39,9 @@ if not DB_PATH.is_absolute():
     DB_PATH = BASE_DIR / DB_PATH
 UPLOAD_DIR = BASE_DIR / 'web' / 'static' / 'uploads'
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-PUBLIC_BASE_URL = os.getenv('WEB_PUBLIC_BASE_URL', 'http://109.120.184.82:5001')
+WEB_HOST = os.getenv('WEB_HOST', '127.0.0.1')
+WEB_PORT = int(os.getenv('WEB_PORT', '5001'))
+PUBLIC_BASE_URL = os.getenv('WEB_PUBLIC_BASE_URL', f'http://{WEB_HOST}:{WEB_PORT}')
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', secrets.token_hex(16))
@@ -666,4 +668,5 @@ def sales_report(period: str) -> Any:
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    # Только петля: панель админская, наружу её пускают ssh-туннелем или reverse proxy с TLS.
+    app.run(host=WEB_HOST, port=WEB_PORT, debug=False)

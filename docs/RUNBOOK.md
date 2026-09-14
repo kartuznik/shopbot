@@ -2,7 +2,7 @@
 
 Операционное руководство для self-hosted деплоя. Секреты, публичные IP и домены сюда не пишем — используйте `.env`, Nginx и инфраструктуру окружения.
 
-Деплой продукта: **venv + systemd** (Docker Compose в репозитории нет). Webhook YooKassa — порт **`:8080`**. Веб-админка — порт **`:5001`**.
+Деплой продукта: **venv + systemd** (Docker Compose в репозитории нет). Оба HTTP-слушателя сидят на петле: webhook YooKassa — **`127.0.0.1:8080`** (наружу через Nginx), веб-админка — **`127.0.0.1:5001`** (наружу через ssh-туннель или reverse proxy с TLS).
 
 ## Deploy (systemd + Nginx)
 
@@ -36,7 +36,7 @@ systemctl status shopbot-web
 Проверка:
 
 - Бот отвечает в Telegram (`/start`, `/health` для админа).
-- Админка открывается на `:5001`.
+- Админка открывается на `127.0.0.1:5001` через ssh-туннель: `ssh -N -L 5001:127.0.0.1:5001 root@<YOUR_HOST> -p 2222`.
 - Webhook слушает `127.0.0.1:8080` (адрес задаётся `WEBHOOK_HOST`/`WEBHOOK_PORT` в `.env`). Снаружи — только через Nginx; bind на `0.0.0.0` открывает порт в обход reverse proxy и запрещён.
 
 ### Nginx (webhook)
@@ -49,9 +49,10 @@ systemctl status shopbot-web
 
 ```bash
 ufw allow 80/tcp
-ufw allow 5001/tcp
 ufw reload
 ```
+
+`5001` наружу не открываем: админка слушает петлю, снаружи — только ssh-туннель или reverse proxy с TLS.
 
 После docs-only изменений перезапуск сервисов не нужен. После изменений кода:
 

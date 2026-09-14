@@ -203,16 +203,25 @@ class BotHealthMonitor:
         return False, last_error, last_error_kind
 
     async def _count_restarts_last_hour(self) -> int | None:
-        process = await asyncio.create_subprocess_exec(
-            'journalctl',
-            '-u',
-            'shopbot',
-            '--since',
-            '1 hour ago',
-            '--no-pager',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'journalctl',
+                '-u',
+                'shopbot',
+                '--since',
+                '1 hour ago',
+                '--no-pager',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as error:
+            # Диагностика не должна ронять бота: без journalctl просто нет метрики рестартов.
+            self._log(
+                logging.ERROR,
+                'RESTARTS',
+                f'Не удалось запустить journalctl (проверьте PATH в юните): {error}',
+            )
+            return None
         stdout, stderr = await process.communicate()
         if process.returncode != 0:
             self._log(

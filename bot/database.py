@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -1473,5 +1474,116 @@ async def get_products_rows_for_sheets() -> list[list[Any]]:
                 [int(row['id']), row['name'], row['category_name'], float(row['price']), int(row['sold_qty'])]
             )
         return result
+    finally:
+        await db.close()
+
+
+async def sync_demo_products(items: Iterable[Any]) -> dict[str, int]:
+    """Заводит позиции витрины в products по названию внутри секции.
+
+    Схема не меняется: секция становится категорией, позиция — товаром. Повторный
+    старт обновляет цену и описание, а не плодит дубли. Возвращает id позиции → product_id.
+    """
+    db = await get_db()
+    mapping: dict[str, int] = {}
+    try:
+        for item in items:
+            await db.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (item.section,))
+            category = await (
+                await db.execute('SELECT id FROM categories WHERE name = ?', (item.section,))
+            ).fetchone()
+            category_id = int(category['id'])
+            product = await (
+                await db.execute(
+                    'SELECT id FROM products WHERE name = ? AND category_id = ? ORDER BY id LIMIT 1',
+                    (item.title, category_id),
+                )
+            ).fetchone()
+            if product is None:
+                cursor = await db.execute(
+                    'INSERT INTO products (name, description, price, category_id) VALUES (?, ?, ?, ?)',
+                    (item.title, item.description, float(item.price), category_id),
+                )
+                mapping[item.id] = int(cursor.lastrowid)
+            else:
+                await db.execute(
+                    'UPDATE products SET description = ?, price = ? WHERE id = ?',
+                    (item.description, float(item.price), int(product['id'])),
+                )
+                mapping[item.id] = int(product['id'])
+        await db.commit()
+        return mapping
+    finally:
+        await db.close()
+
+
+_ORDER_SUMMARY_SQL = """
+    SELECT o.id, o.user_id, o.product_id, o.quantity, o.total_price, o.status, o.created_at,
+           p.name AS product_name
+    FROM orders o
+    JOIN products p ON p.id = o.product_id
+"""
+
+
+async def get_order_summary(order_id: int) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        row = await (await db.execute(f'{_ORDER_SUMMARY_SQL} WHERE o.id = ?', (order_id,))).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def get_last_order_for_products(product_ids: Iterable[int]) -> dict[str, Any] | None:
+    ids = [int(pid) for pid in product_ids]
+    if not ids:
+        return None
+    placeholders = ','.join('?' for _ in ids)
+    db = await get_db()
+    try:
+        row = await (
+            await db.execute(
+                f'{_ORDER_SUMMARY_SQL} WHERE o.product_id IN ({placeholders}) ORDER BY o.id DESC LIMIT 1',
+                ids,
+            )
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def mark_order_paid(order_id: int) -> None:
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE payments SET status = 'succeeded', paid_at = CURRENT_TIMESTAMP WHERE order_id = ?",
+            (order_id,),
+        )
+        await db.execute("UPDATE orders SET status = 'paid' WHERE id = ?", (order_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def reset_demo_orders(product_ids: Iterable[int]) -> dict[str, int]:
+    """Чистит корзины, заказы, платежи и отзывы только по товарам витрины."""
+    ids = [int(pid) for pid in product_ids]
+    counts = {'cart_items': 0, 'payments': 0, 'reviews': 0, 'orders': 0}
+    if not ids:
+        return counts
+    placeholders = ','.join('?' for _ in ids)
+    orders_subquery = f'SELECT id FROM orders WHERE product_id IN ({placeholders})'
+    db = await get_db()
+    try:
+        cursor = await db.execute(f'DELETE FROM cart_items WHERE product_id IN ({placeholders})', ids)
+        counts['cart_items'] = cursor.rowcount
+        cursor = await db.execute(f'DELETE FROM payments WHERE order_id IN ({orders_subquery})', ids)
+        counts['payments'] = cursor.rowcount
+        cursor = await db.execute(f'DELETE FROM reviews WHERE order_id IN ({orders_subquery})', ids)
+        counts['reviews'] = cursor.rowcount
+        cursor = await db.execute(f'DELETE FROM orders WHERE product_id IN ({placeholders})', ids)
+        counts['orders'] = cursor.rowcount
+        await db.commit()
+        return counts
     finally:
         await db.close()

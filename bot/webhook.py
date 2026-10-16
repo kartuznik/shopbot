@@ -11,6 +11,7 @@ from aiogram import Bot
 from flask import Flask, jsonify, request
 
 from bot.config import get_settings
+from bot.demo_flow import notify_customer_paid
 from bot.webhook_security import client_ip, fetch_payment_status, is_yookassa_ip, verify_signature
 
 logger = logging.getLogger('shopbot.webhook')
@@ -73,6 +74,16 @@ def _notify_admins_payment(order_id: int, status: str) -> None:
             continue
 
 
+def _notify_customer_paid(order_id: int) -> None:
+    if _bot is None or _loop is None:
+        return
+    future = asyncio.run_coroutine_threadsafe(notify_customer_paid(_bot, order_id), _loop)
+    try:
+        future.result(timeout=5)
+    except Exception as error:
+        logger.warning('Подтверждение покупателю по заказу #%s не отправлено: %s', order_id, error)
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
 
@@ -123,6 +134,8 @@ def create_app() -> Flask:
 
         if resolved_order_id is not None and status in {'succeeded', 'cancelled'}:
             _notify_admins_payment(resolved_order_id, status)
+        if resolved_order_id is not None and status == 'succeeded' and settings.DEMO_MODE:
+            _notify_customer_paid(resolved_order_id)
         return jsonify({'ok': True}), 200
 
     return app

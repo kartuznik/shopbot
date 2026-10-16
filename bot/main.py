@@ -6,10 +6,12 @@ import logging
 
 from aiogram import Bot, Dispatcher
 
+from bot import demo_flow
 from bot.config import get_settings
-from bot.database import init_db
+from bot.database import init_db, sync_demo_products
+from bot.demo_catalog import load_catalog
 from bot.health import BotHealthMonitor, set_monitor
-from bot.handlers import admin, analytics, broadcast, delivery, payment, reviews, sheets, user
+from bot.handlers import admin, analytics, broadcast, delivery, demo, payment, reviews, sheets, user
 from bot.handlers.broadcast import process_due_broadcasts
 from bot.handlers.sheets import process_auto_sync_configs
 from bot.webhook import start_webhook_server
@@ -34,14 +36,19 @@ async def main() -> None:
 
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
     dp = Dispatcher()
-    # Demo mode for FL.ru: keep only user + payment chain active.
-    # dp.include_router(admin.router)
-    # dp.include_router(analytics.router)
-    # dp.include_router(broadcast.router)
-    # dp.include_router(delivery.router)
+    if settings.DEMO_MODE:
+        catalog = load_catalog(settings.DEMO_CATALOG_PATH)
+        demo_flow.activate(catalog, await sync_demo_products(catalog.items))
+        logging.info('DEMO_MODE: витрина «%s», позиций %s', catalog.shop_name, len(catalog.items))
+        # Первым, чтобы /start открывал витрину; остальные роутеры Level 1 продолжают работать.
+        dp.include_router(demo.router)
+    dp.include_router(admin.router)
+    dp.include_router(analytics.router)
+    dp.include_router(broadcast.router)
+    dp.include_router(delivery.router)
     dp.include_router(payment.router)
-    # dp.include_router(reviews.router)
-    # dp.include_router(sheets.router)
+    dp.include_router(reviews.router)
+    dp.include_router(sheets.router)
     dp.include_router(user.router)
 
     monitor = BotHealthMonitor(

@@ -1,0 +1,85 @@
+# Витрина для съёмки Reels: бот берёт товары только отсюда (DEMO_MODE=true).
+# Смена скина = правка этого файла + карточки в demo/images (см. README, «Демо для Reels»).
+# Плейсхолдеры шаблонов: {shop_name} {order_id} {items} {total} {pickup_time}
+
+shop_name: "Пекарня Тёплое тесто и кофе"
+
+greeting: |-
+  👋 Привет! Это Пекарня Тёплое тесто и кофе: десерты и напитки можно забронировать к вашему приходу.
+  Выберите, что вам по душе, и я отложу для вас ☕🥐
+
+reminder_template: |-
+  ⏰ {shop_name}
+  Ваш заказ #{order_id} — {items} — скучает и ждёт подтверждения времени.
+  Забронировали к {pickup_time}. Удобно забрать? Напишите, если нужно другое время 🤎
+
+confirmation_template: |-
+  ✅ Оплата прошла, заказ #{order_id} подтверждён!
+  {items}
+  Сумма: {total} ₽
+  📍 {shop_name} отложит его для вас — заберите к {pickup_time} 🤎
+
+items:
+  - id: bun_caramel
+    section: Выпечка
+    title: Булочка с карамелью
+    description: Мягкая улитка с карамельной корочкой, пахнет тёплым маслом. Печём по утрам.
+    price: 320
+    image_path: bun_caramel.jpg
+    emoji: "🥐"
+
+  - id: tart_caramel_nut
+    section: Выпечка
+    title: Карамельный тарт с грецким орехом
+    description: Песочная корзинка и густая карамель, сверху хрустящий орех. Берём кусочками.
+    price: 420
+    image_path: tart_caramel_nut.jpg
+    emoji: "🥧"
+
+  - id: tart_dome
+    section: Выпечка
+    title: Тарталетка с глянцевым куполом
+    description: Хрустящая корзинка, сливочные шапочки, глянцевый купол. Лучше заказать заранее.
+    price: 480
+    image_path: tart_dome.jpg
+    emoji: "🧁"
+
+  - id: tart_stripe
+    section: Выпечка
+    title: Тарт с карамельными полосками
+    description: Песочная основа и сливочные ломтики-полоски, тает во рту. Хорош к кофе.
+    price: 390
+    image_path: tart_stripe.jpg
+    emoji: "🍰"
+
+  - id: bun_berliner
+    section: Выпечка
+    title: Берлинеры с начинкой
+    description: Пышные, в сахарной крошке, с ягодной и ореховой шапочкой. Свежие по предзаказу.
+    price: 350
+    image_path: bun_berliner.jpg
+    emoji: "🍩"
+
+  - id: raf_coconut
+    section: Напитки
+    title: Раф кокосовый
+    description: Сливочная пенка, мягкий кофейный низ и хрустящая посыпка. Подаём в высоком стакане.
+    price: 320
+    image_path: raf_coconut.jpg
+    emoji: "🥥"
+
+  - id: coffee_iced_layered
+    section: Напитки
+    title: Айс-кофе слоями
+    description: Тёмный эспрессо над молочным слоем, сверху воздушная пенка. С деревянной трубочкой.
+    price: 290
+    image_path: coffee_iced_layered.jpg
+    emoji: "🧊"
+
+  - id: coffee_affogato
+    section: Напитки
+    title: Аффогато с пломбиром
+    description: Эспрессо плавит шарик пломбира, выходит тёплый сливочный сироп. Подаём в креманке.
+    price: 350
+    image_path: coffee_affogato.jpg
+    emoji: "🍨"

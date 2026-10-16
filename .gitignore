@@ -8,3 +8,4 @@ venv/
 data/
 logs/
 credentials.json
+raw/

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     WEBHOOK_PORT: int = Field(default=8080)
     # Секрет в query string адреса уведомлений. Пустое значение закрывает эндпоинт целиком.
     WEBHOOK_SECRET_TOKEN: str = Field(default='')
+    # Витрина для съёмки Reels из demo/catalog.yaml. Выключено — бот работает как обычный магазин.
+    DEMO_MODE: bool = Field(default=False)
+    DEMO_CATALOG_PATH: str = Field(default='demo/catalog.yaml')
 
     @field_validator('ADMIN_IDS', mode='before')
     @classmethod

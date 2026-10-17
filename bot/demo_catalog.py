@@ -15,7 +15,7 @@ DEFAULT_IMAGES_DIR = PROJECT_ROOT / 'demo' / 'images'
 PICKUP_OFFSET_MINUTES = 30
 PICKUP_ROUND_MINUTES = 5
 
-_REQUIRED_TOP = ('shop_name', 'greeting', 'reminder_template', 'confirmation_template', 'items')
+_REQUIRED_TOP = ('shop_name', 'greeting', 'about', 'reminder_template', 'confirmation_template', 'items')
 _REQUIRED_ITEM = ('id', 'section', 'title', 'description', 'price', 'image_path', 'emoji')
 _TEMPLATE_KEYS = {
     'shop_name': '',
@@ -45,6 +45,7 @@ class DemoItem:
 class DemoCatalog:
     shop_name: str
     greeting: str
+    about: str
     reminder_template: str
     confirmation_template: str
     items: tuple[DemoItem, ...]
@@ -112,6 +113,7 @@ def parse_catalog(data: Any) -> DemoCatalog:
     catalog = DemoCatalog(
         shop_name=str(data['shop_name']).strip(),
         greeting=str(data['greeting']).strip(),
+        about=str(data['about']).strip(),
         reminder_template=str(data['reminder_template']).strip(),
         confirmation_template=str(data['confirmation_template']).strip(),
         items=items,

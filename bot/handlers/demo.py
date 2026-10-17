@@ -12,6 +12,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    ReplyKeyboardMarkup,
 )
 
 from bot.config import get_settings
@@ -52,6 +53,7 @@ from bot.demo_flow import (
     product_id_for,
 )
 from bot.handlers.payment import create_yukassa_payment
+from bot.keyboards.reply import ABOUT, CART_BUTTON_PATTERN, CLEAR_CART, HELP, MENU, get_main_keyboard
 from bot.webhook_security import fetch_payment_status
 
 logger = logging.getLogger('shopbot.demo')
@@ -97,15 +99,6 @@ def card_keyboard(item: DemoItem) -> InlineKeyboardMarkup:
     )
 
 
-def added_keyboard(cart: CartSummary) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn('🛒 Оформить заказ', 'dm:checkout')],
-            [_cart_button(cart), _btn(*BACK_TO_MENU)],
-        ]
-    )
-
-
 def cart_keyboard(cart: CartSummary) -> InlineKeyboardMarkup:
     if cart.empty:
         return InlineKeyboardMarkup(inline_keyboard=[[_btn(*BACK_TO_MENU)]])
@@ -135,8 +128,23 @@ def receipt_keyboard(group_id: int, total: float, payment_url: str | None) -> In
     )
 
 
-def done_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[_btn('🥐 Заказать ещё', 'dm:menu'), _cart_button()]])
+async def main_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+    cart = await cart_summary(user_id)
+    return get_main_keyboard(cart.quantity, cart.total)
+
+
+def help_text(catalog: DemoCatalog) -> str:
+    return (
+        f'❓ Как заказать в «{catalog.shop_name}»\n\n'
+        f'1. «{MENU}» — выберите позицию, откроется карточка с фото.\n'
+        '2. «➕ В корзину» — добавьте всё, что хочется; количество растёт с каждым нажатием.\n'
+        '3. «🛒 Корзина» — проверьте заказ и нажмите «🛒 Оформить заказ».\n'
+        '4. «💳 Оплатить» — после оплаты заказ отложат к указанному времени самовывоза.\n\n'
+        f'«{CLEAR_CART}» — начать заново, «{ABOUT}» — адрес, часы работы и телефон.'
+    )
+
+
+CLEARED_TEXT = f'🗑 Корзина очищена. Загляните в «{MENU}», чтобы выбрать заново.'
 
 
 def cart_text(catalog: DemoCatalog, cart: CartSummary) -> str:
@@ -205,8 +213,24 @@ def _item_from(callback: CallbackQuery, catalog: DemoCatalog | None) -> DemoItem
     return catalog.get((callback.data or '').split(':', 2)[2]) if catalog else None
 
 
-async def _send_menu(message: Message, catalog: DemoCatalog, user_id: int, text: str) -> None:
-    await message.answer(text, reply_markup=menu_keyboard(catalog, await cart_summary(user_id)))
+def _menu_header(catalog: DemoCatalog) -> str:
+    return f'☕ {catalog.shop_name} — меню 👇'
+
+
+async def _send_menu(message: Message, catalog: DemoCatalog, user_id: int) -> None:
+    await message.answer(_menu_header(catalog), reply_markup=menu_keyboard(catalog, await cart_summary(user_id)))
+
+
+async def _send_greeting_and_menu(message: Message, catalog: DemoCatalog, user_id: int) -> None:
+    # У сообщения одна клавиатура: нижнюю везёт приветствие, инлайн-меню идёт следом.
+    await message.answer(catalog.greeting, reply_markup=await main_keyboard(user_id))
+    await _send_menu(message, catalog, user_id)
+
+
+async def _clear_and_report(message: Message, state: FSMContext, user_id: int) -> None:
+    await clear_user_cart(user_id)
+    await state.clear()
+    await message.answer(CLEARED_TEXT, reply_markup=get_main_keyboard())
 
 
 async def send_card(message: Message, item: DemoItem) -> None:
@@ -255,7 +279,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         return
     await upsert_user(message.from_user.id, message.from_user.username)
     await _move(state, PurchaseEvent.OPEN_MENU)
-    await _send_menu(message, catalog, message.from_user.id, catalog.greeting)
+    await _send_greeting_and_menu(message, catalog, message.from_user.id)
 
 
 @router.callback_query(F.data == 'dm:noop')
@@ -270,7 +294,7 @@ async def callback_menu(callback: CallbackQuery, state: FSMContext) -> None:
     if catalog is None or callback.message is None or not callback.from_user:
         return
     await _move(state, PurchaseEvent.OPEN_MENU)
-    await _send_menu(callback.message, catalog, callback.from_user.id, f'☕ {catalog.shop_name} — меню 👇')
+    await _send_menu(callback.message, catalog, callback.from_user.id)
 
 
 @router.callback_query(F.data.startswith('dm:item:'))
@@ -295,7 +319,7 @@ async def callback_add(callback: CallbackQuery, state: FSMContext) -> None:
     cart = await add_item(callback.from_user.id, product_id)
     await callback.answer(f'Добавлено: {item.title}')
     await _move(state, PurchaseEvent.ADD_TO_CART, demo_item=item.id)
-    await callback.message.answer(added_text(item, cart), reply_markup=added_keyboard(cart))
+    await callback.message.answer(added_text(item, cart), reply_markup=get_main_keyboard(cart.quantity, cart.total))
 
 
 @router.callback_query(F.data.startswith('dm:buy:'))
@@ -343,10 +367,8 @@ async def callback_cart_clear(callback: CallbackQuery, state: FSMContext) -> Non
     if catalog is None or callback.message is None or not callback.from_user:
         await callback.answer()
         return
-    await clear_user_cart(callback.from_user.id)
-    await state.clear()
     await callback.answer('Корзина очищена')
-    await _send_menu(callback.message, catalog, callback.from_user.id, '🗑 Корзина очищена. Выберите, что вам по душе 👇')
+    await _clear_and_report(callback.message, state, callback.from_user.id)
 
 
 @router.callback_query(F.data.startswith('dm:check:'))
@@ -373,7 +395,9 @@ async def callback_check(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
     if group['status'] == 'paid':
-        await callback.message.answer(build_confirmation(catalog, group).text, reply_markup=done_keyboard())
+        await callback.message.answer(
+            build_confirmation(catalog, group).text, reply_markup=await main_keyboard(callback.from_user.id)
+        )
         return
 
     payment = await get_payment_by_order(group_id)
@@ -391,7 +415,48 @@ async def callback_check(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
     await _move(state, PurchaseEvent.PAID, demo_order_id=group_id)
-    await callback.message.answer(confirmation.text, reply_markup=done_keyboard())
+    await callback.message.answer(confirmation.text, reply_markup=await main_keyboard(callback.from_user.id))
+
+
+@router.message(F.text == MENU)
+async def button_menu(message: Message, state: FSMContext) -> None:
+    await cmd_start(message, state)
+
+
+@router.message(F.text.regexp(CART_BUTTON_PATTERN))
+async def button_cart(message: Message, state: FSMContext) -> None:
+    catalog = _catalog_or_none()
+    if catalog is None or not message.from_user:
+        return
+    cart = await cart_summary(message.from_user.id)
+    await _move(state, PurchaseEvent.OPEN_CART)
+    if cart.empty:
+        await message.answer(cart_text(catalog, cart), reply_markup=get_main_keyboard())
+        return
+    await message.answer(cart_text(catalog, cart), reply_markup=cart_keyboard(cart))
+
+
+@router.message(F.text == CLEAR_CART)
+async def button_clear_cart(message: Message, state: FSMContext) -> None:
+    if _catalog_or_none() is None or not message.from_user:
+        return
+    await _clear_and_report(message, state, message.from_user.id)
+
+
+@router.message(F.text == ABOUT)
+async def button_about(message: Message) -> None:
+    catalog = _catalog_or_none()
+    if catalog is None or not message.from_user:
+        return
+    await message.answer(catalog.about, reply_markup=await main_keyboard(message.from_user.id))
+
+
+@router.message(F.text == HELP)
+async def button_help(message: Message) -> None:
+    catalog = _catalog_or_none()
+    if catalog is None or not message.from_user:
+        return
+    await message.answer(help_text(catalog), reply_markup=await main_keyboard(message.from_user.id))
 
 
 @router.message(Command('demo_remind'))

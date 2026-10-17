@@ -29,6 +29,7 @@ from bot.demo_catalog import (
     render_confirmation,
     render_reminder,
 )
+from bot.keyboards.reply import get_main_keyboard
 
 logger = logging.getLogger('shopbot.demo')
 
@@ -218,6 +219,6 @@ async def notify_customer_paid(bot: Bot, order_id: int) -> None:
     await clear_cart(int(group['user_id']))
     message = build_confirmation(_catalog, group)
     try:
-        await bot.send_message(chat_id=message.user_id, text=message.text)
+        await bot.send_message(chat_id=message.user_id, text=message.text, reply_markup=get_main_keyboard())
     except Exception as error:
         logger.warning('Не удалось отправить подтверждение по заказу #%s: %s', order_id, error)

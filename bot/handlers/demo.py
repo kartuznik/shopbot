@@ -53,7 +53,17 @@ from bot.demo_flow import (
     product_id_for,
 )
 from bot.handlers.payment import create_yukassa_payment
-from bot.keyboards.reply import ABOUT, CART_BUTTON_PATTERN, CLEAR_CART, HELP, MENU, get_main_keyboard
+from bot.keyboards.reply import (
+    ABOUT,
+    CART_BUTTON_PATTERN,
+    CLEAR_CART,
+    CLEAR_CART_TEXTS,
+    HELP,
+    MENU,
+    PAY,
+    PAY_BUTTON_PATTERN,
+    get_main_keyboard,
+)
 from bot.webhook_security import fetch_payment_status
 
 logger = logging.getLogger('shopbot.demo')
@@ -140,6 +150,7 @@ def help_text(catalog: DemoCatalog) -> str:
         '2. «➕ В корзину» — добавьте всё, что хочется; количество растёт с каждым нажатием.\n'
         '3. «🛒 Корзина» — проверьте заказ и нажмите «🛒 Оформить заказ».\n'
         '4. «💳 Оплатить» — после оплаты заказ отложат к указанному времени самовывоза.\n\n'
+        f'Когда в корзине есть товары, внизу появляется «{PAY} … ₽» — чек сразу, без захода в корзину.\n'
         f'«{CLEAR_CART}» — начать заново, «{ABOUT}» — адрес, часы работы и телефон.'
     )
 
@@ -249,23 +260,29 @@ async def send_card(message: Message, item: DemoItem) -> None:
     await message.answer(card_text_fallback(item), reply_markup=keyboard)
 
 
-async def _send_receipt(callback: CallbackQuery, state: FSMContext, catalog: DemoCatalog) -> None:
+async def _send_receipt(
+    message: Message,
+    user_id: int,
+    state: FSMContext,
+    catalog: DemoCatalog,
+    empty_markup: InlineKeyboardMarkup | ReplyKeyboardMarkup | None = None,
+) -> None:
     create_payment = None if payments_simulated(get_settings()) else create_yukassa_payment
     try:
-        receipt = await checkout(catalog, callback.from_user.id, create_payment)
+        receipt = await checkout(catalog, user_id, create_payment)
     except Exception as error:
         logger.exception('Не удалось оформить заказ: %s', error)
-        await callback.message.answer(
+        await message.answer(
             '😔 Не получилось оформить оплату. Попробуйте ещё раз через минуту.',
-            reply_markup=cart_keyboard(await cart_summary(callback.from_user.id)),
+            reply_markup=cart_keyboard(await cart_summary(user_id)),
         )
         return
     if receipt is None:
         await _move(state, PurchaseEvent.OPEN_CART)
-        await callback.message.answer('🛒 Корзина пуста', reply_markup=cart_keyboard(CartSummary((), 0, 0.0)))
+        await message.answer('🛒 Корзина пуста', reply_markup=empty_markup or cart_keyboard(CartSummary((), 0, 0.0)))
         return
     await _move(state, PurchaseEvent.CHECKOUT, demo_order_id=receipt.group_id)
-    await callback.message.answer(
+    await message.answer(
         receipt_text(receipt),
         reply_markup=receipt_keyboard(receipt.group_id, receipt.total, receipt.payment_url),
     )
@@ -337,7 +354,7 @@ async def callback_buy(callback: CallbackQuery, state: FSMContext) -> None:
     if (await cart_summary(callback.from_user.id)).empty:
         await add_item(callback.from_user.id, product_id)
     await _move(state, PurchaseEvent.OPEN_CARD, demo_item=item.id)
-    await _send_receipt(callback, state, catalog)
+    await _send_receipt(callback.message, callback.from_user.id, state, catalog)
 
 
 @router.callback_query(F.data == 'dm:cart')
@@ -358,7 +375,7 @@ async def callback_checkout(callback: CallbackQuery, state: FSMContext) -> None:
     if catalog is None or callback.message is None or not callback.from_user:
         return
     await upsert_user(callback.from_user.id, callback.from_user.username)
-    await _send_receipt(callback, state, catalog)
+    await _send_receipt(callback.message, callback.from_user.id, state, catalog)
 
 
 @router.callback_query(F.data == 'dm:cart_clear')
@@ -436,7 +453,17 @@ async def button_cart(message: Message, state: FSMContext) -> None:
     await message.answer(cart_text(catalog, cart), reply_markup=cart_keyboard(cart))
 
 
-@router.message(F.text == CLEAR_CART)
+@router.message(F.text.regexp(PAY_BUTTON_PATTERN))
+async def button_pay(message: Message, state: FSMContext) -> None:
+    catalog = _catalog_or_none()
+    if catalog is None or not message.from_user:
+        return
+    await upsert_user(message.from_user.id, message.from_user.username)
+    # Сумма в подписи могла устареть: чек всегда собирается по текущей корзине.
+    await _send_receipt(message, message.from_user.id, state, catalog, empty_markup=get_main_keyboard())
+
+
+@router.message(F.text.in_(CLEAR_CART_TEXTS))
 async def button_clear_cart(message: Message, state: FSMContext) -> None:
     if _catalog_or_none() is None or not message.from_user:
         return

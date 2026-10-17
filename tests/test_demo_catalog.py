@@ -526,6 +526,7 @@ BUTTON_HANDLERS = {
     reply.ABOUT: 'button_about',
     reply.HELP: 'button_help',
 }
+BUTTON_HANDLER_NAMES = {*BUTTON_HANDLERS.values(), 'button_pay'}
 
 
 def _customer() -> SimpleNamespace:
@@ -569,15 +570,32 @@ def test_main_keyboard_layout_and_flags():
     assert isinstance(markup, ReplyKeyboardMarkup)
     assert _reply_rows(markup) == [
         ['📋 Меню', '🛒 Корзина'],
-        ['🗑 Очистить корзину', 'ℹ️ О пекарне', '❓ Помощь'],
+        ['🗑 Очистить', 'ℹ️ О пекарне', '❓ Помощь'],
     ]
     assert markup.resize_keyboard is True and markup.one_time_keyboard is False and markup.is_persistent is True
 
+    full = reply.get_main_keyboard(3, 1090.0)
+    assert _reply_rows(full) == [
+        ['📋 Меню', '💳 Оплатить 1 090 ₽'],
+        ['🗑 Очистить', 'ℹ️ О пекарне', '❓ Помощь'],
+    ]
+    assert full.resize_keyboard is True and full.one_time_keyboard is False and full.is_persistent is True
 
-def test_cart_button_shows_counter():
+
+def test_full_cart_turns_cart_button_into_pay():
     assert _cart_label(reply.get_main_keyboard(0, 0)) == '🛒 Корзина'
-    assert _cart_label(reply.get_main_keyboard(3, 1090.0)) == '🛒 Корзина 3 шт на 1 090 ₽'
-    assert _cart_label(reply.get_main_keyboard(cart_count=1, cart_total=320)) == '🛒 Корзина 1 шт на 320 ₽'
+    assert _cart_label(reply.get_main_keyboard(3, 1090.0)) == '💳 Оплатить 1 090 ₽'
+    assert _cart_label(reply.get_main_keyboard(cart_count=1, cart_total=320)) == '💳 Оплатить 320 ₽'
+
+
+@pytest.mark.parametrize('text', ['💳 Оплатить 320 ₽', '💳 Оплатить 1 090 ₽', '💳 Оплатить 99.50 ₽'])
+def test_pay_button_pattern_accepts_any_total(text):
+    assert reply.PAY_BUTTON_PATTERN.match(text)
+
+
+@pytest.mark.parametrize('text', ['💳 Оплатить', 'Оплатить 320 ₽', '💳 Оплатить 320', '💳 Оплатить сейчас 320 ₽'])
+def test_pay_button_pattern_rejects_other_text(text):
+    assert not reply.PAY_BUTTON_PATTERN.match(text)
 
 
 @pytest.mark.parametrize(
@@ -594,24 +612,31 @@ def test_cart_button_pattern_rejects_other_text(text):
 
 
 def _matching_button_handlers(text: str) -> list[str]:
-    names = set(BUTTON_HANDLERS.values())
     matched = []
     for handler in demo_handlers.router.message.handlers:
-        if handler.callback.__name__ in names and asyncio.run(handler.check(SimpleNamespace(text=text)))[0]:
+        if handler.callback.__name__ in BUTTON_HANDLER_NAMES and asyncio.run(handler.check(SimpleNamespace(text=text)))[0]:
             matched.append(handler.callback.__name__)
     return matched
 
 
 def test_reply_buttons_route_to_their_handlers():
-    labels = [text for row in _reply_rows(reply.get_main_keyboard(2, 640.0)) for text in row]
-    expected = {**BUTTON_HANDLERS, '🛒 Корзина 2 шт на 640 ₽': 'button_cart'}
+    empty_labels = [text for row in _reply_rows(reply.get_main_keyboard()) for text in row]
+    assert {label: _matching_button_handlers(label) for label in empty_labels} == {
+        label: [name] for label, name in BUTTON_HANDLERS.items()
+    }
+    full_labels = [text for row in _reply_rows(reply.get_main_keyboard(2, 640.0)) for text in row]
+    expected = {**BUTTON_HANDLERS, '💳 Оплатить 640 ₽': 'button_pay'}
     del expected[reply.CART]
-    assert {label: _matching_button_handlers(label) for label in labels} == {
+    assert {label: _matching_button_handlers(label) for label in full_labels} == {
         label: [name] for label, name in expected.items()
     }
-    assert _matching_button_handlers('🛒 Корзина 5 шт на 1 600 ₽') == ['button_cart']
-    for text in ('Привет', 'Меню', 'корзина', 'О пекарне', '❓ Помощь!'):
+    for text in ('Привет', 'Меню', 'корзина', 'О пекарне', '❓ Помощь!', '🗑 Очистить всё', 'Оплатить'):
         assert _matching_button_handlers(text) == []
+
+
+def test_buttons_from_previous_keyboards_still_work():
+    assert _matching_button_handlers('🗑 Очистить корзину') == ['button_clear_cart']
+    assert _matching_button_handlers('🛒 Корзина 5 шт на 1 600 ₽') == ['button_cart']
 
 
 def test_start_sends_greeting_with_reply_keyboard_then_inline_menu(catalog, demo_db):
@@ -624,7 +649,7 @@ def test_start_sends_greeting_with_reply_keyboard_then_inline_menu(catalog, demo
     (greeting, greeting_markup), (header, menu_markup) = _sent(message)
     assert greeting == catalog.greeting
     assert isinstance(greeting_markup, ReplyKeyboardMarkup)
-    assert _cart_label(greeting_markup) == '🛒 Корзина 2 шт на 640 ₽'
+    assert _cart_label(greeting_markup) == '💳 Оплатить 640 ₽'
     assert catalog.shop_name in header
     assert isinstance(menu_markup, InlineKeyboardMarkup)
     assert _buttons(menu_markup) == _buttons(demo_handlers.menu_keyboard(catalog, asyncio.run(demo_flow.cart_summary(CUSTOMER_ID))))
@@ -645,10 +670,10 @@ def test_add_to_cart_refreshes_reply_counter(catalog, demo_db):
 
     (first_text, first_markup), (second_text, second_markup) = _sent(callback.message)
     assert first_text == '✅ Добавлено: Булочка с карамелью. В корзине: 1 позиция на 320 ₽'
-    assert _cart_label(first_markup) == '🛒 Корзина 1 шт на 320 ₽'
+    assert _cart_label(first_markup) == '💳 Оплатить 320 ₽'
     assert second_text.endswith('В корзине: 2 позиции на 640 ₽')
     assert isinstance(second_markup, ReplyKeyboardMarkup)
-    assert _cart_label(second_markup) == '🛒 Корзина 2 шт на 640 ₽'
+    assert _cart_label(second_markup) == '💳 Оплатить 640 ₽'
 
 
 def test_cart_button_shows_contents_with_inline_actions(catalog, demo_db):
@@ -711,12 +736,12 @@ def test_about_and_help_buttons(catalog, demo_db):
     asyncio.run(demo_handlers.button_about(about))
     [(about_text, about_markup)] = _sent(about)
     assert about_text == catalog.about
-    assert _cart_label(about_markup) == '🛒 Корзина 1 шт на 320 ₽'
+    assert _cart_label(about_markup) == '💳 Оплатить 320 ₽'
 
     help_message = _chat_message(reply.HELP)
     asyncio.run(demo_handlers.button_help(help_message))
     [(help_text, help_markup)] = _sent(help_message)
-    for hint in ('📋 Меню', '➕ В корзину', '🛒 Оформить заказ', '💳 Оплатить', '🗑 Очистить корзину', 'ℹ️ О пекарне'):
+    for hint in ('📋 Меню', '➕ В корзину', '🛒 Оформить заказ', '💳 Оплатить', '«🗑 Очистить»', 'ℹ️ О пекарне'):
         assert hint in help_text
     assert 'демо' not in help_text.lower()
     assert isinstance(help_markup, ReplyKeyboardMarkup)
@@ -772,6 +797,72 @@ def test_payment_confirmation_brings_reply_keyboard(catalog, demo_db, monkeypatc
     assert progress.startswith('⏳') and progress_markup is None
     assert f'#{receipt.group_id}' in confirmation and 'Итого: 610 ₽' in confirmation
     assert isinstance(markup, ReplyKeyboardMarkup) and _cart_label(markup) == '🛒 Корзина'
+
+
+def test_pay_button_creates_receipt_with_inline_pay(catalog, demo_db):
+    db_path, product_ids = demo_db
+    _add(product_ids, 'bun_caramel', 'bun_caramel', 'raf_coconut')
+    message = _chat_message('💳 Оплатить 960 ₽')
+
+    asyncio.run(demo_handlers.button_pay(message, _state()))
+
+    [(text, markup)] = _sent(message)
+    assert text.startswith('🧾 Заказ #') and 'Итого: 3 позиции на 960 ₽' in text
+    group_id = int(text.split('#')[1].split()[0])
+    assert isinstance(markup, InlineKeyboardMarkup)
+    assert sum(_buttons(markup), [])[0] == ('💳 Оплатить 960 ₽', f'dm:check:{group_id}')
+    assert _rows(db_path, 'SELECT COUNT(*) FROM orders WHERE group_id = ?', group_id) == [(2,)]
+    assert _rows(db_path, 'SELECT order_id, amount, status FROM payments') == [(group_id, 960.0, 'pending')]
+
+
+def test_pay_button_with_stale_total_bills_current_cart(catalog, demo_db):
+    _, product_ids = demo_db
+    _add(product_ids, 'tart_dome', 'raf_coconut')
+    message = _chat_message('💳 Оплатить 480 ₽')
+
+    asyncio.run(demo_handlers.button_pay(message, _state()))
+
+    [(text, markup)] = _sent(message)
+    assert 'Итого: 2 позиции на 800 ₽' in text
+    assert sum(_buttons(markup), [])[0][0] == '💳 Оплатить 800 ₽'
+
+
+def test_pay_button_replaces_previous_open_receipt(catalog, demo_db):
+    db_path, product_ids = demo_db
+    _add(product_ids, 'bun_berliner')
+    first = asyncio.run(demo_flow.checkout(catalog, CUSTOMER_ID, None))
+    _add(product_ids, 'coffee_affogato')
+
+    message = _chat_message('💳 Оплатить 700 ₽')
+    asyncio.run(demo_handlers.button_pay(message, _state()))
+
+    assert _rows(db_path, 'SELECT DISTINCT status FROM orders WHERE group_id = ?', first.group_id) == [('cancelled',)]
+    assert 'Итого: 2 позиции на 700 ₽' in _sent(message)[0][0]
+
+
+def test_pay_button_on_empty_cart(catalog, demo_db):
+    message = _chat_message('💳 Оплатить 320 ₽')
+    asyncio.run(demo_handlers.button_pay(message, _state()))
+    [(text, markup)] = _sent(message)
+    assert text == '🛒 Корзина пуста'
+    assert isinstance(markup, ReplyKeyboardMarkup) and _cart_label(markup) == '🛒 Корзина'
+
+
+def test_pay_button_then_inline_pay_confirms(catalog, demo_db, monkeypatch):
+    _, product_ids = demo_db
+    monkeypatch.setattr(demo_handlers, 'SIMULATED_PAYMENT_DELAY_SECONDS', 0)
+    _add(product_ids, 'coffee_iced_layered')
+    message = _chat_message('💳 Оплатить 290 ₽')
+    asyncio.run(demo_handlers.button_pay(message, _state()))
+    pay_data = sum(_buttons(_sent(message)[0][1]), [])[0][1]
+
+    callback = _callback(pay_data)
+    asyncio.run(demo_handlers.callback_check(callback, _state()))
+
+    confirmation, markup = _sent(callback.message)[-1]
+    assert confirmation.startswith('✅ Оплата прошла')
+    assert _cart_label(markup) == '🛒 Корзина'
+    assert asyncio.run(demo_flow.cart_summary(CUSTOMER_ID)).empty
 
 
 def test_webhook_confirmation_brings_reply_keyboard(catalog, demo_db):

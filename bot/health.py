@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 import sqlite3
@@ -49,6 +50,8 @@ class BotHealthMonitor:
         self.max_consecutive_bot_errors = 5
         self.retry_delays = [5, 10, 20, 40]
         self.restart_alert_threshold = 10
+        self.unit_name = 'shopbot'
+        self.restart_samples_path = str(Path(self.data_dir) / 'restart_samples.json')
 
         self._stop_event = asyncio.Event()
         self._is_healing = False
@@ -202,36 +205,77 @@ class BotHealthMonitor:
                     break
         return False, last_error, last_error_kind
 
-    async def _count_restarts_last_hour(self) -> int | None:
+    async def _read_systemd_restarts(self) -> int | None:
+        # Только счётчик systemd, не journalctl: сканирование журнала за час читает
+        # гигабайты с диска и на 2 ГБ RAM выдавливает память соседних сервисов в swap.
         try:
             process = await asyncio.create_subprocess_exec(
-                'journalctl',
-                '-u',
-                'shopbot',
-                '--since',
-                '1 hour ago',
-                '--no-pager',
+                'systemctl',
+                'show',
+                self.unit_name,
+                '--property=NRestarts',
+                '--value',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
         except OSError as error:
-            # Диагностика не должна ронять бота: без journalctl просто нет метрики рестартов.
+            # Диагностика не должна ронять бота: без systemctl просто нет метрики рестартов.
             self._log(
                 logging.ERROR,
                 'RESTARTS',
-                f'Не удалось запустить journalctl (проверьте PATH в юните): {error}',
+                f'Не удалось запустить systemctl (проверьте PATH в юните): {error}',
             )
             return None
         stdout, stderr = await process.communicate()
-        if process.returncode != 0:
+        value = stdout.decode(errors='ignore').strip()
+        if process.returncode != 0 or not value.isdigit():
             self._log(
                 logging.ERROR,
                 'RESTARTS',
-                f'Не удалось прочитать journalctl для restart rate: {stderr.decode(errors="ignore").strip()}',
+                f'Не удалось прочитать NRestarts: {stderr.decode(errors="ignore").strip() or value or "пусто"}',
             )
             return None
-        text = stdout.decode(errors='ignore')
-        return text.count('Scheduled restart job')
+        return int(value)
+
+    def _load_restart_samples(self) -> list[tuple[float, int]]:
+        try:
+            raw = json.loads(Path(self.restart_samples_path).read_text(encoding='utf-8'))
+            return [(float(ts), int(count)) for ts, count in raw]
+        except (OSError, ValueError, TypeError):
+            return []
+
+    def _save_restart_samples(self, samples: list[tuple[float, int]]) -> None:
+        path = Path(self.restart_samples_path)
+        try:
+            tmp = path.with_name(f'.{path.name}.tmp')
+            tmp.write_text(json.dumps(samples), encoding='utf-8')
+            tmp.replace(path)
+        except OSError as error:
+            self._log(logging.WARNING, 'RESTARTS', f'Не удалось сохранить выборки рестартов: {error}')
+
+    def _restarts_in_window(self, now: float, current: int) -> int:
+        """Прирост NRestarts за последний час.
+
+        Выборки лежат в файле, потому что авторестарт перезапускает и сам процесс
+        монитора. Ручной systemctl restart обнуляет NRestarts — тогда отсчёт идёт от нуля.
+        """
+        window_start = now - 3600
+        samples = self._load_restart_samples()
+        if samples and current < samples[-1][1]:
+            samples = [(samples[-1][0], 0)]
+        samples.append((now, current))
+        # Последняя выборка не позже начала окна остаётся якорем для разницы.
+        anchors = [index for index, (ts, _) in enumerate(samples) if ts <= window_start]
+        if anchors:
+            samples = samples[anchors[-1]:]
+        self._save_restart_samples(samples)
+        return max(0, current - samples[0][1])
+
+    async def _count_restarts_last_hour(self) -> int | None:
+        current = await self._read_systemd_restarts()
+        if current is None:
+            return None
+        return self._restarts_in_window(datetime.now(tz=UTC).timestamp(), current)
 
     async def _check_restart_frequency(self) -> None:
         restart_count = await self._count_restarts_last_hour()

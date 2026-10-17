@@ -30,7 +30,7 @@
 - Управлять ассортиментом, заказами, доставкой и рассылками из Telegram и веб-панели.
 - Синхронизировать отчёты с Google Sheets (ручной и auto-sync).
 - Экспортировать данные в CSV/Excel из веб-админки.
-- Health-мониторинг (`/health`, journalctl, health-log).
+- Health-мониторинг (`/health`, счётчик рестартов systemd `NRestarts`, health-log).
 
 ### Чего не умеет (честный scope)
 

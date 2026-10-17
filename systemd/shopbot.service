@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/bots/shopbot
-# Системные пути обязательны: health-монитор вызывает journalctl из /usr/bin.
+# Системные пути обязательны: health-монитор вызывает systemctl из /usr/bin.
 # Без них процесс падал с FileNotFoundError (12 падений с 31.07 по 10.09.2026).
 Environment="PATH=/opt/bots/shopbot/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ExecStart=/opt/bots/shopbot/venv/bin/python -m bot.main

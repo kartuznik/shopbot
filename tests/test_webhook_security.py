@@ -136,6 +136,30 @@ def test_repeated_delivery_is_idempotent(client: FlaskClient, db_path: Path) -> 
     assert order_state(db_path) == state_after_first
 
 
+def test_payment_marks_whole_order_group_paid(client: FlaskClient, db_path: Path) -> None:
+    import sqlite3
+
+    db = sqlite3.connect(db_path)
+    try:
+        db.execute('UPDATE orders SET group_id = id WHERE id = 1')
+        db.execute(
+            "INSERT INTO orders (id, user_id, product_id, quantity, total_price, status, group_id)"
+            " VALUES (2, 100, 2, 1, 300.0, 'new', 1), (3, 100, 3, 1, 50.0, 'new', NULL)"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    assert post_notification(client).status_code == 200
+
+    db = sqlite3.connect(db_path)
+    try:
+        statuses = dict(db.execute('SELECT id, status FROM orders').fetchall())
+    finally:
+        db.close()
+    assert statuses == {1: 'paid', 2: 'paid', 3: 'new'}
+
+
 def test_authorized_but_empty_payload_is_rejected(client: FlaskClient, db_path: Path) -> None:
     response = post_notification(client, body={'type': 'notification', 'object': {}})
 

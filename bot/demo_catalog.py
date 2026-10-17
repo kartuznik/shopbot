@@ -142,7 +142,21 @@ def image_file(item: DemoItem, images_dir: Path | None = None) -> Path | None:
 
 
 def format_price(value: float) -> str:
-    return f'{value:.0f}' if float(value).is_integer() else f'{value:.2f}'
+    text = f'{value:,.0f}' if float(value).is_integer() else f'{value:,.2f}'
+    return text.replace(',', ' ')
+
+
+def plural_positions(count: int) -> str:
+    tail = count % 100
+    if 11 <= tail <= 14:
+        word = 'позиций'
+    elif count % 10 == 1:
+        word = 'позиция'
+    elif 2 <= count % 10 <= 4:
+        word = 'позиции'
+    else:
+        word = 'позиций'
+    return f'{count} {word}'
 
 
 def card_caption(item: DemoItem) -> str:
@@ -153,10 +167,23 @@ def card_text_fallback(item: DemoItem) -> str:
     return f'{item.emoji * 3}\n\n{card_caption(item)}'
 
 
-def format_order_items(catalog: DemoCatalog, title: str, quantity: int) -> str:
+def format_line(catalog: DemoCatalog, title: str, quantity: int, line_total: float) -> str:
     item = catalog.by_title(title)
     emoji = f'{item.emoji} ' if item else ''
-    return f'{emoji}{title} × {quantity}'
+    return f'{emoji}{title} × {quantity} — {format_price(line_total)} ₽'
+
+
+def format_lines(catalog: DemoCatalog, lines: list[dict[str, Any]]) -> str:
+    """Строки корзины или заказа: ключи name/product_name, quantity, line_total/total_price."""
+    return '\n'.join(
+        format_line(
+            catalog,
+            str(line.get('product_name') or line.get('name')),
+            int(line['quantity']),
+            float(line['total_price'] if 'total_price' in line else line['line_total']),
+        )
+        for line in lines
+    )
 
 
 def parse_db_timestamp(value: str | datetime) -> datetime:
@@ -202,6 +229,8 @@ def render_reminder(
 class PurchaseState(str, Enum):
     MENU = 'menu'
     CARD = 'card'
+    CART = 'cart'
+    CHECKOUT = 'checkout'
     AWAITING_PAYMENT = 'awaiting_payment'
     CONFIRMED = 'confirmed'
 
@@ -209,7 +238,10 @@ class PurchaseState(str, Enum):
 class PurchaseEvent(str, Enum):
     OPEN_MENU = 'open_menu'
     OPEN_CARD = 'open_card'
-    RESERVE = 'reserve'
+    OPEN_CART = 'open_cart'
+    ADD_TO_CART = 'add_to_cart'
+    CHECKOUT = 'checkout'
+    PAY = 'pay'
     PAID = 'paid'
 
 
@@ -217,12 +249,17 @@ class InvalidTransition(Exception):
     pass
 
 
-# Меню и карточка доступны из любого состояния: кнопка «Назад» и новый дубль записи
-# не должны упираться в прошлый шаг. Бронь — только с карточки, оплата — только после брони.
+# Меню, карточка и корзина доступны из любого состояния: это кнопки «Назад», и новый
+# дубль записи не должен упираться в прошлый шаг. Чек — с карточки или из корзины,
+# оплата — только из чека.
 _TRANSITIONS: dict[tuple[PurchaseState, PurchaseEvent], PurchaseState] = {
     **{(state, PurchaseEvent.OPEN_MENU): PurchaseState.MENU for state in PurchaseState},
     **{(state, PurchaseEvent.OPEN_CARD): PurchaseState.CARD for state in PurchaseState},
-    (PurchaseState.CARD, PurchaseEvent.RESERVE): PurchaseState.AWAITING_PAYMENT,
+    **{(state, PurchaseEvent.OPEN_CART): PurchaseState.CART for state in PurchaseState},
+    (PurchaseState.CARD, PurchaseEvent.ADD_TO_CART): PurchaseState.CARD,
+    (PurchaseState.CARD, PurchaseEvent.CHECKOUT): PurchaseState.CHECKOUT,
+    (PurchaseState.CART, PurchaseEvent.CHECKOUT): PurchaseState.CHECKOUT,
+    (PurchaseState.CHECKOUT, PurchaseEvent.PAY): PurchaseState.AWAITING_PAYMENT,
     (PurchaseState.AWAITING_PAYMENT, PurchaseEvent.PAID): PurchaseState.CONFIRMED,
 }
 

@@ -47,10 +47,11 @@ def _update_payment_and_order(payment_id: str, status: str, order_id: int | None
                 """,
                 (order_id,),
             )
-            db.execute("UPDATE orders SET status = 'paid' WHERE id = ?", (order_id,))
+            # group_id: заказ витрины из нескольких строк оплачивается одним платежом на первой строке.
+            db.execute("UPDATE orders SET status = 'paid' WHERE id = ? OR group_id = ?", (order_id, order_id))
         elif status == 'cancelled':
             db.execute("UPDATE payments SET status = 'cancelled' WHERE order_id = ?", (order_id,))
-            db.execute("UPDATE orders SET status = 'cancelled' WHERE id = ?", (order_id,))
+            db.execute("UPDATE orders SET status = 'cancelled' WHERE id = ? OR group_id = ?", (order_id, order_id))
         else:
             db.execute("UPDATE payments SET status = ? WHERE order_id = ?", (status, order_id))
         db.commit()

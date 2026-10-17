@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from aiogram import Bot
@@ -11,17 +12,18 @@ from aiogram import Bot
 from bot.config import Settings
 from bot.database import (
     add_to_cart,
+    cancel_pending_groups,
     clear_cart,
-    create_order_from_cart,
-    get_order_summary,
+    create_order_group_from_cart,
+    get_cart_items,
+    get_order_group,
     get_payment_by_order,
-    mark_order_paid,
+    mark_group_paid,
     save_payment,
 )
 from bot.demo_catalog import (
     DemoCatalog,
-    DemoItem,
-    format_order_items,
+    format_lines,
     parse_db_timestamp,
     pickup_time,
     render_confirmation,
@@ -38,10 +40,23 @@ FetchStatus = Callable[[str], str | None]
 
 
 @dataclass(frozen=True)
-class Reservation:
-    order_id: int
+class CartSummary:
+    lines: tuple[dict[str, Any], ...]
+    quantity: int
     total: float
+
+    @property
+    def empty(self) -> bool:
+        return not self.lines
+
+
+@dataclass(frozen=True)
+class Receipt:
+    group_id: int
     items: str
+    quantity: int
+    total: float
+    pickup: datetime
     payment_url: str | None
 
     @property
@@ -70,7 +85,7 @@ def active_catalog() -> DemoCatalog | None:
     return _catalog
 
 
-def product_id_for(item: DemoItem) -> int | None:
+def product_id_for(item: Any) -> int | None:
     return _product_ids.get(item.id)
 
 
@@ -83,73 +98,102 @@ def payments_simulated(settings: Settings) -> bool:
     return not settings.YUKASSA_SHOP_ID.strip() or not settings.YUKASSA_SECRET_KEY.strip()
 
 
-async def reserve(
-    catalog: DemoCatalog,
-    item: DemoItem,
-    product_id: int,
-    user_id: int,
-    create_payment: CreatePayment | None,
-) -> Reservation:
-    # Одна позиция на заказ: create_order_from_cart заводит отдельный заказ на каждую строку корзины.
-    await clear_cart(user_id)
+async def cart_summary(user_id: int) -> CartSummary:
+    lines = tuple(
+        {**item, 'line_total': float(item['price']) * int(item['quantity'])}
+        for item in await get_cart_items(user_id)
+    )
+    return CartSummary(
+        lines=lines,
+        quantity=sum(int(line['quantity']) for line in lines),
+        total=sum(line['line_total'] for line in lines),
+    )
+
+
+async def add_item(user_id: int, product_id: int) -> CartSummary:
     await add_to_cart(user_id, product_id, 1)
-    result = await create_order_from_cart(user_id=user_id, address=PICKUP_ADDRESS, shipping_cost=0.0)
-    order_id = int(result['order_ids'][0])
-    total = float(result['total'])
+    return await cart_summary(user_id)
+
+
+async def clear_user_cart(user_id: int) -> None:
+    await cancel_pending_groups(user_id)
+    await clear_cart(user_id)
+
+
+def _group_quantity(group: dict[str, Any]) -> int:
+    return sum(int(line['quantity']) for line in group['lines'])
+
+
+def _group_pickup(group: dict[str, Any]) -> datetime:
+    return pickup_time(parse_db_timestamp(group['created_at']))
+
+
+async def checkout(catalog: DemoCatalog, user_id: int, create_payment: CreatePayment | None) -> Receipt | None:
+    """Чек на всю корзину: один номер заказа и один платёж. None — корзина пуста."""
+    if (await cart_summary(user_id)).empty:
+        return None
+    await cancel_pending_groups(user_id)
+    group_id = await create_order_group_from_cart(user_id, address=PICKUP_ADDRESS)
+    group = await get_order_group(group_id) if group_id else None
+    if group is None:
+        return None
+    total = float(group['total'])
 
     payment_url: str | None = None
     if create_payment is None:
         await save_payment(
-            order_id=order_id,
+            order_id=group_id,
             amount=total,
             payment_url='',
-            payment_id=f'{SIMULATED_PAYMENT_PREFIX}{order_id}',
+            payment_id=f'{SIMULATED_PAYMENT_PREFIX}{group_id}',
         )
     else:
-        payment_url, _ = await create_payment(order_id, total, f'{catalog.shop_name}: заказ #{order_id}')
+        payment_url, _ = await create_payment(group_id, total, f'{catalog.shop_name}: заказ #{group_id}')
 
-    return Reservation(
-        order_id=order_id,
+    return Receipt(
+        group_id=group_id,
+        items=format_lines(catalog, group['lines']),
+        quantity=_group_quantity(group),
         total=total,
-        items=format_order_items(catalog, item.title, 1),
+        pickup=_group_pickup(group),
         payment_url=payment_url,
     )
 
 
-def _order_values(catalog: DemoCatalog, order: dict[str, Any]) -> dict[str, Any]:
+def _template_args(catalog: DemoCatalog, group: dict[str, Any]) -> dict[str, Any]:
     return {
-        'order_id': int(order['id']),
-        'items': format_order_items(catalog, str(order['product_name']), int(order['quantity'])),
-        'total': float(order['total_price']),
-        'pickup': pickup_time(parse_db_timestamp(order['created_at'])),
+        'order_id': int(group['group_id']),
+        'items': format_lines(catalog, group['lines']),
+        'total': float(group['total']),
+        'pickup': _group_pickup(group),
     }
 
 
-def build_confirmation(catalog: DemoCatalog, order: dict[str, Any]) -> OrderMessage:
+def build_confirmation(catalog: DemoCatalog, group: dict[str, Any]) -> OrderMessage:
     return OrderMessage(
-        order_id=int(order['id']),
-        user_id=int(order['user_id']),
-        text=render_confirmation(catalog, **_order_values(catalog, order)),
+        order_id=int(group['group_id']),
+        user_id=int(group['user_id']),
+        text=render_confirmation(catalog, **_template_args(catalog, group)),
     )
 
 
-def build_reminder(catalog: DemoCatalog, order: dict[str, Any]) -> OrderMessage:
+def build_reminder(catalog: DemoCatalog, group: dict[str, Any]) -> OrderMessage:
     return OrderMessage(
-        order_id=int(order['id']),
-        user_id=int(order['user_id']),
-        text=render_reminder(catalog, **_order_values(catalog, order)),
+        order_id=int(group['group_id']),
+        user_id=int(group['user_id']),
+        text=render_reminder(catalog, **_template_args(catalog, group)),
     )
 
 
 async def confirm_payment(
-    catalog: DemoCatalog, order_id: int, fetch_status: FetchStatus
+    catalog: DemoCatalog, group_id: int, fetch_status: FetchStatus
 ) -> OrderMessage | None:
-    """Подтверждение заказа или None, если касса ещё не видит оплату."""
-    order = await get_order_summary(order_id)
-    if order is None:
+    """Подтверждение заказа или None, если чек отменён или касса ещё не видит оплату."""
+    group = await get_order_group(group_id)
+    if group is None or group['status'] == 'cancelled':
         return None
-    if order['status'] != 'paid':
-        payment = await get_payment_by_order(order_id)
+    if group['status'] != 'paid':
+        payment = await get_payment_by_order(group_id)
         if payment is None:
             return None
         payment_id = str(payment.get('payment_id') or '')
@@ -157,19 +201,22 @@ async def confirm_payment(
             status = await asyncio.to_thread(fetch_status, payment_id)
             if status != 'succeeded':
                 return None
-        await mark_order_paid(order_id)
-        order = await get_order_summary(order_id) or order
-    return build_confirmation(catalog, order)
+        await mark_group_paid(group_id)
+        await clear_cart(int(group['user_id']))
+        group = await get_order_group(group_id) or group
+    return build_confirmation(catalog, group)
 
 
 async def notify_customer_paid(bot: Bot, order_id: int) -> None:
     """Подтверждение покупателю после вебхука ЮKassa; заказы вне витрины не трогаем."""
     if _catalog is None:
         return
-    order = await get_order_summary(order_id)
-    if order is None or int(order['product_id']) not in set(_product_ids.values()):
+    group = await get_order_group(order_id)
+    demo_ids = set(_product_ids.values())
+    if group is None or not all(int(line['product_id']) in demo_ids for line in group['lines']):
         return
-    message = build_confirmation(_catalog, order)
+    await clear_cart(int(group['user_id']))
+    message = build_confirmation(_catalog, group)
     try:
         await bot.send_message(chat_id=message.user_id, text=message.text)
     except Exception as error:

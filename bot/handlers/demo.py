@@ -16,9 +16,8 @@ from aiogram.types import (
 
 from bot.config import get_settings
 from bot.database import (
-    clear_cart,
-    get_last_order_for_products,
-    get_order_summary,
+    get_last_group_for_products,
+    get_order_group,
     get_payment_by_order,
     reset_demo_orders,
     upsert_user,
@@ -32,18 +31,25 @@ from bot.demo_catalog import (
     can_advance,
     card_caption,
     card_text_fallback,
+    format_lines,
     format_price,
     image_file,
+    plural_positions,
 )
 from bot.demo_flow import (
-    Reservation,
+    CartSummary,
+    Receipt,
     active_catalog,
+    add_item,
+    build_confirmation,
     build_reminder,
+    cart_summary,
+    checkout,
+    clear_user_cart,
     confirm_payment,
     demo_product_ids,
     payments_simulated,
     product_id_for,
-    reserve,
 )
 from bot.handlers.payment import create_yukassa_payment
 from bot.webhook_security import fetch_payment_status
@@ -63,40 +69,101 @@ def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
-def menu_keyboard(catalog: DemoCatalog) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
+def _cart_button(cart: CartSummary | None = None) -> InlineKeyboardButton:
+    if cart is None or cart.empty:
+        return _btn('🛒 Корзина', 'dm:cart')
+    return _btn(f'🛒 Корзина · {cart.quantity} шт · {format_price(cart.total)} ₽', 'dm:cart')
+
+
+BACK_TO_MENU = ('⬅️ Назад в меню', 'dm:menu')
+
+
+def menu_keyboard(catalog: DemoCatalog, cart: CartSummary | None = None) -> InlineKeyboardMarkup:
+    # Корзина — первой строкой: после добавления товаров путь к оформлению виден сразу.
+    rows: list[list[InlineKeyboardButton]] = [[_cart_button(cart)]]
     for section in catalog.sections():
         rows.append([_btn(f'— {section} —', 'dm:noop')])
         for item in catalog.items_in(section):
             rows.append([_btn(f'{item.emoji} {item.title} · {format_price(item.price)} ₽', f'dm:item:{item.id}')])
-    rows.append([_btn('🧺 Сбросить корзину', 'dm:cart_reset')])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def card_keyboard(item: DemoItem) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn(f'💳 Забронировать за {format_price(item.price)} ₽', f'dm:reserve:{item.id}')],
-            [_btn('⬅️ Назад в меню', 'dm:menu'), _btn('🧺 Сбросить корзину', 'dm:cart_reset')],
+            [_btn('➕ В корзину', f'dm:add:{item.id}'), _btn('🛒 Оформить заказ', f'dm:buy:{item.id}')],
+            [_cart_button(), _btn(*BACK_TO_MENU)],
         ]
     )
 
 
-def payment_keyboard(order_id: int, total: float, payment_url: str | None) -> InlineKeyboardMarkup:
+def added_keyboard(cart: CartSummary) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn('🛒 Оформить заказ', 'dm:checkout')],
+            [_cart_button(cart), _btn(*BACK_TO_MENU)],
+        ]
+    )
+
+
+def cart_keyboard(cart: CartSummary) -> InlineKeyboardMarkup:
+    if cart.empty:
+        return InlineKeyboardMarkup(inline_keyboard=[[_btn(*BACK_TO_MENU)]])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn('🛒 Оформить заказ', 'dm:checkout')],
+            [_btn('🗑 Очистить корзину', 'dm:cart_clear')],
+            [_btn(*BACK_TO_MENU)],
+        ]
+    )
+
+
+def receipt_keyboard(group_id: int, total: float, payment_url: str | None) -> InlineKeyboardMarkup:
     if payment_url:
         pay_rows = [
             [InlineKeyboardButton(text=f'💳 Оплатить {format_price(total)} ₽', url=payment_url)],
-            [_btn('✅ Я оплатил', f'dm:check:{order_id}')],
+            [_btn('✅ Я оплатил', f'dm:check:{group_id}')],
         ]
     else:
-        pay_rows = [[_btn(f'💳 Оплатить {format_price(total)} ₽', f'dm:check:{order_id}')]]
+        pay_rows = [[_btn(f'💳 Оплатить {format_price(total)} ₽', f'dm:check:{group_id}')]]
     return InlineKeyboardMarkup(
-        inline_keyboard=[*pay_rows, [_btn('⬅️ Назад в меню', 'dm:menu'), _btn('🧺 Сбросить корзину', 'dm:cart_reset')]]
+        inline_keyboard=[
+            *pay_rows,
+            [_btn('🗑 Очистить корзину', 'dm:cart_clear')],
+            [_btn('⬅️ Назад в корзину', 'dm:cart')],
+        ]
     )
 
 
 def done_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[_btn('🥐 Заказать ещё', 'dm:menu')]])
+    return InlineKeyboardMarkup(inline_keyboard=[[_btn('🥐 Заказать ещё', 'dm:menu'), _cart_button()]])
+
+
+def cart_text(catalog: DemoCatalog, cart: CartSummary) -> str:
+    if cart.empty:
+        return '🛒 Корзина пуста'
+    return (
+        '🛒 Ваша корзина:\n'
+        f'{format_lines(catalog, list(cart.lines))}\n\n'
+        f'Итого: {plural_positions(cart.quantity)} на {format_price(cart.total)} ₽'
+    )
+
+
+def added_text(item: DemoItem, cart: CartSummary) -> str:
+    return (
+        f'✅ Добавлено: {item.title}. '
+        f'В корзине: {plural_positions(cart.quantity)} на {format_price(cart.total)} ₽'
+    )
+
+
+def receipt_text(receipt: Receipt) -> str:
+    return (
+        f'🧾 Заказ #{receipt.group_id}\n'
+        f'{receipt.items}\n\n'
+        f'Итого: {plural_positions(receipt.quantity)} на {format_price(receipt.total)} ₽\n'
+        f'🕒 Самовывоз к {receipt.pickup.strftime("%H:%M")}\n\n'
+        'Оплатите — и мы отложим заказ к вашему приходу.'
+    )
 
 
 async def _current(state: FSMContext) -> PurchaseState:
@@ -108,8 +175,10 @@ async def _current(state: FSMContext) -> PurchaseState:
 
 
 _PREREQUISITES: dict[PurchaseEvent, tuple[PurchaseEvent, ...]] = {
-    PurchaseEvent.RESERVE: (PurchaseEvent.OPEN_CARD,),
-    PurchaseEvent.PAID: (PurchaseEvent.OPEN_CARD, PurchaseEvent.RESERVE),
+    PurchaseEvent.ADD_TO_CART: (PurchaseEvent.OPEN_CARD,),
+    PurchaseEvent.CHECKOUT: (PurchaseEvent.OPEN_CART,),
+    PurchaseEvent.PAY: (PurchaseEvent.OPEN_CART, PurchaseEvent.CHECKOUT),
+    PurchaseEvent.PAID: (PurchaseEvent.OPEN_CART, PurchaseEvent.CHECKOUT, PurchaseEvent.PAY),
 }
 
 
@@ -132,8 +201,12 @@ def _catalog_or_none() -> DemoCatalog | None:
     return catalog
 
 
-async def _send_menu(message: Message, catalog: DemoCatalog, text: str) -> None:
-    await message.answer(text, reply_markup=menu_keyboard(catalog))
+def _item_from(callback: CallbackQuery, catalog: DemoCatalog | None) -> DemoItem | None:
+    return catalog.get((callback.data or '').split(':', 2)[2]) if catalog else None
+
+
+async def _send_menu(message: Message, catalog: DemoCatalog, user_id: int, text: str) -> None:
+    await message.answer(text, reply_markup=menu_keyboard(catalog, await cart_summary(user_id)))
 
 
 async def send_card(message: Message, item: DemoItem) -> None:
@@ -152,12 +225,25 @@ async def send_card(message: Message, item: DemoItem) -> None:
     await message.answer(card_text_fallback(item), reply_markup=keyboard)
 
 
-def _order_text(reservation: Reservation) -> str:
-    return (
-        f'🧾 Заказ #{reservation.order_id}\n'
-        f'{reservation.items}\n'
-        f'К оплате: {format_price(reservation.total)} ₽\n\n'
-        'Оплатите — и я отложу его для вас к вашему приходу.'
+async def _send_receipt(callback: CallbackQuery, state: FSMContext, catalog: DemoCatalog) -> None:
+    create_payment = None if payments_simulated(get_settings()) else create_yukassa_payment
+    try:
+        receipt = await checkout(catalog, callback.from_user.id, create_payment)
+    except Exception as error:
+        logger.exception('Не удалось оформить заказ: %s', error)
+        await callback.message.answer(
+            '😔 Не получилось оформить оплату. Попробуйте ещё раз через минуту.',
+            reply_markup=cart_keyboard(await cart_summary(callback.from_user.id)),
+        )
+        return
+    if receipt is None:
+        await _move(state, PurchaseEvent.OPEN_CART)
+        await callback.message.answer('🛒 Корзина пуста', reply_markup=cart_keyboard(CartSummary((), 0, 0.0)))
+        return
+    await _move(state, PurchaseEvent.CHECKOUT, demo_order_id=receipt.group_id)
+    await callback.message.answer(
+        receipt_text(receipt),
+        reply_markup=receipt_keyboard(receipt.group_id, receipt.total, receipt.payment_url),
     )
 
 
@@ -169,7 +255,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         return
     await upsert_user(message.from_user.id, message.from_user.username)
     await _move(state, PurchaseEvent.OPEN_MENU)
-    await _send_menu(message, catalog, catalog.greeting)
+    await _send_menu(message, catalog, message.from_user.id, catalog.greeting)
 
 
 @router.callback_query(F.data == 'dm:noop')
@@ -181,28 +267,15 @@ async def callback_noop(callback: CallbackQuery) -> None:
 async def callback_menu(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     catalog = _catalog_or_none()
-    if catalog is None or callback.message is None:
+    if catalog is None or callback.message is None or not callback.from_user:
         return
     await _move(state, PurchaseEvent.OPEN_MENU)
-    await _send_menu(callback.message, catalog, f'☕ {catalog.shop_name} — меню 👇')
-
-
-@router.callback_query(F.data == 'dm:cart_reset')
-async def callback_cart_reset(callback: CallbackQuery, state: FSMContext) -> None:
-    catalog = _catalog_or_none()
-    if catalog is None or callback.message is None or not callback.from_user:
-        await callback.answer()
-        return
-    await clear_cart(callback.from_user.id)
-    await state.clear()
-    await callback.answer('Корзина очищена')
-    await _send_menu(callback.message, catalog, '🧺 Корзина пуста. Выберите, что вам по душе 👇')
+    await _send_menu(callback.message, catalog, callback.from_user.id, f'☕ {catalog.shop_name} — меню 👇')
 
 
 @router.callback_query(F.data.startswith('dm:item:'))
 async def callback_item(callback: CallbackQuery, state: FSMContext) -> None:
-    catalog = _catalog_or_none()
-    item = catalog.get((callback.data or '').split(':', 2)[2]) if catalog else None
+    item = _item_from(callback, _catalog_or_none())
     if item is None or callback.message is None:
         await callback.answer('Позиция не найдена', show_alert=True)
         return
@@ -211,48 +284,69 @@ async def callback_item(callback: CallbackQuery, state: FSMContext) -> None:
     await send_card(callback.message, item)
 
 
-@router.callback_query(F.data.startswith('dm:reserve:'))
-async def callback_reserve(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data.startswith('dm:add:'))
+async def callback_add(callback: CallbackQuery, state: FSMContext) -> None:
+    item = _item_from(callback, _catalog_or_none())
+    product_id = product_id_for(item) if item else None
+    if item is None or product_id is None or callback.message is None or not callback.from_user:
+        await callback.answer('Позиция не найдена', show_alert=True)
+        return
+    await upsert_user(callback.from_user.id, callback.from_user.username)
+    cart = await add_item(callback.from_user.id, product_id)
+    await callback.answer(f'Добавлено: {item.title}')
+    await _move(state, PurchaseEvent.ADD_TO_CART, demo_item=item.id)
+    await callback.message.answer(added_text(item, cart), reply_markup=added_keyboard(cart))
+
+
+@router.callback_query(F.data.startswith('dm:buy:'))
+async def callback_buy(callback: CallbackQuery, state: FSMContext) -> None:
     catalog = _catalog_or_none()
-    item = catalog.get((callback.data or '').split(':', 2)[2]) if catalog else None
+    item = _item_from(callback, catalog)
     product_id = product_id_for(item) if item else None
     if catalog is None or item is None or product_id is None or callback.message is None or not callback.from_user:
         await callback.answer('Позиция не найдена', show_alert=True)
         return
-
-    data = await state.get_data()
-    pending_id = data.get('demo_order_id')
-    if await _current(state) == PurchaseState.AWAITING_PAYMENT and data.get('demo_item') == item.id and pending_id:
-        pending = await get_order_summary(int(pending_id))
-        if pending is not None and pending['status'] != 'paid':
-            payment = await get_payment_by_order(int(pending_id))
-            await callback.answer('Этот заказ уже ждёт оплаты')
-            await callback.message.answer(
-                f'🧾 Заказ #{pending_id} уже ждёт оплаты.',
-                reply_markup=payment_keyboard(
-                    int(pending_id), float(pending['total_price']), (payment or {}).get('payment_url') or None
-                ),
-            )
-            return
-
     await callback.answer()
     await upsert_user(callback.from_user.id, callback.from_user.username)
-    create_payment = None if payments_simulated(get_settings()) else create_yukassa_payment
-    try:
-        reservation = await reserve(catalog, item, product_id, callback.from_user.id, create_payment)
-    except Exception as error:
-        logger.exception('Не удалось оформить бронь %s: %s', item.id, error)
-        await callback.message.answer(
-            '😔 Не получилось оформить оплату. Попробуйте ещё раз через минуту.',
-            reply_markup=card_keyboard(item),
-        )
-        return
+    # Быстрый сценарий: с пустой корзиной «Оформить» на карточке берёт эту позицию.
+    # Если в корзине уже что-то есть, оформляется корзина как есть.
+    if (await cart_summary(callback.from_user.id)).empty:
+        await add_item(callback.from_user.id, product_id)
+    await _move(state, PurchaseEvent.OPEN_CARD, demo_item=item.id)
+    await _send_receipt(callback, state, catalog)
 
-    await _move(state, PurchaseEvent.RESERVE, demo_item=item.id, demo_order_id=reservation.order_id)
-    await callback.message.answer(
-        _order_text(reservation),
-        reply_markup=payment_keyboard(reservation.order_id, reservation.total, reservation.payment_url),
-    )
+
+@router.callback_query(F.data == 'dm:cart')
+async def callback_cart(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    catalog = _catalog_or_none()
+    if catalog is None or callback.message is None or not callback.from_user:
+        return
+    cart = await cart_summary(callback.from_user.id)
+    await _move(state, PurchaseEvent.OPEN_CART)
+    await callback.message.answer(cart_text(catalog, cart), reply_markup=cart_keyboard(cart))
+
+
+@router.callback_query(F.data == 'dm:checkout')
+async def callback_checkout(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    catalog = _catalog_or_none()
+    if catalog is None or callback.message is None or not callback.from_user:
+        return
+    await upsert_user(callback.from_user.id, callback.from_user.username)
+    await _send_receipt(callback, state, catalog)
+
+
+@router.callback_query(F.data == 'dm:cart_clear')
+async def callback_cart_clear(callback: CallbackQuery, state: FSMContext) -> None:
+    catalog = _catalog_or_none()
+    if catalog is None or callback.message is None or not callback.from_user:
+        await callback.answer()
+        return
+    await clear_user_cart(callback.from_user.id)
+    await state.clear()
+    await callback.answer('Корзина очищена')
+    await _send_menu(callback.message, catalog, callback.from_user.id, '🗑 Корзина очищена. Выберите, что вам по душе 👇')
 
 
 @router.callback_query(F.data.startswith('dm:check:'))
@@ -262,31 +356,41 @@ async def callback_check(callback: CallbackQuery, state: FSMContext) -> None:
     if catalog is None or not raw_id.isdigit() or callback.message is None or not callback.from_user:
         await callback.answer('Заказ не найден', show_alert=True)
         return
-    order_id = int(raw_id)
-    order = await get_order_summary(order_id)
-    if order is None:
+    group_id = int(raw_id)
+    group = await get_order_group(group_id)
+    if group is None:
         await callback.answer('Заказ не найден', show_alert=True)
         return
-    if order['user_id'] != callback.from_user.id and not _is_admin(callback.from_user.id):
+    if group['user_id'] != callback.from_user.id and not _is_admin(callback.from_user.id):
         await callback.answer('Нет доступа к заказу', show_alert=True)
         return
-
-    payment = await get_payment_by_order(order_id)
-    simulated = not (payment or {}).get('payment_url')
     await callback.answer()
-    if order['status'] != 'paid':
-        await callback.message.answer('⏳ Проводим оплату…' if simulated else '🔎 Проверяем оплату…')
-        if simulated:
-            await asyncio.sleep(SIMULATED_PAYMENT_DELAY_SECONDS)
+    if group['status'] == 'cancelled':
+        cart = await cart_summary(callback.from_user.id)
+        await callback.message.answer(
+            'Этот чек уже неактуален — корзина менялась. Оформите заказ заново 👇',
+            reply_markup=cart_keyboard(cart),
+        )
+        return
+    if group['status'] == 'paid':
+        await callback.message.answer(build_confirmation(catalog, group).text, reply_markup=done_keyboard())
+        return
 
-    confirmation = await confirm_payment(catalog, order_id, fetch_payment_status)
+    payment = await get_payment_by_order(group_id)
+    payment_url = (payment or {}).get('payment_url') or None
+    await _move(state, PurchaseEvent.PAY, demo_order_id=group_id)
+    await callback.message.answer('⏳ Проводим оплату…' if payment_url is None else '🔎 Проверяем оплату…')
+    if payment_url is None:
+        await asyncio.sleep(SIMULATED_PAYMENT_DELAY_SECONDS)
+
+    confirmation = await confirm_payment(catalog, group_id, fetch_payment_status)
     if confirmation is None:
         await callback.message.answer(
             'Оплата пока не поступила. Завершите её по кнопке «Оплатить» и нажмите «Я оплатил» ещё раз.',
-            reply_markup=payment_keyboard(order_id, float(order['total_price']), (payment or {}).get('payment_url')),
+            reply_markup=receipt_keyboard(group_id, float(group['total']), payment_url),
         )
         return
-    await _move(state, PurchaseEvent.PAID, demo_order_id=order_id)
+    await _move(state, PurchaseEvent.PAID, demo_order_id=group_id)
     await callback.message.answer(confirmation.text, reply_markup=done_keyboard())
 
 
@@ -296,11 +400,12 @@ async def cmd_demo_remind(message: Message) -> None:
         await message.answer('Недостаточно прав.')
         return
     catalog = _catalog_or_none()
-    order = await get_last_order_for_products(demo_product_ids()) if catalog else None
-    if catalog is None or order is None:
+    group_id = await get_last_group_for_products(demo_product_ids()) if catalog else None
+    group = await get_order_group(group_id) if group_id else None
+    if catalog is None or group is None:
         await message.answer('Заказов витрины пока нет.')
         return
-    reminder = build_reminder(catalog, order)
+    reminder = build_reminder(catalog, group)
     try:
         await message.bot.send_message(chat_id=reminder.user_id, text=reminder.text)
     except Exception as error:

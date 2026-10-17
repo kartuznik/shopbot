@@ -31,7 +31,8 @@ def _create_fixture_db(path: Path) -> None:
                 quantity INTEGER NOT NULL,
                 total_price REAL NOT NULL,
                 status TEXT NOT NULL DEFAULT 'new',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                group_id INTEGER
             );
 
             CREATE TABLE payments (

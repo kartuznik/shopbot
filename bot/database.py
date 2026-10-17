@@ -163,6 +163,7 @@ async def init_db() -> None:
         await _ensure_column_exists(db, 'orders', 'address', 'TEXT')
         await _ensure_column_exists(db, 'orders', 'shipping_cost', 'REAL NOT NULL DEFAULT 0')
         await _ensure_column_exists(db, 'orders', 'tracking_number', 'TEXT')
+        await _ensure_column_exists(db, 'orders', 'group_id', 'INTEGER')
         await db.commit()
     finally:
         await db.close()
@@ -1517,24 +1518,75 @@ async def sync_demo_products(items: Iterable[Any]) -> dict[str, int]:
         await db.close()
 
 
-_ORDER_SUMMARY_SQL = """
-    SELECT o.id, o.user_id, o.product_id, o.quantity, o.total_price, o.status, o.created_at,
-           p.name AS product_name
-    FROM orders o
-    JOIN products p ON p.id = o.product_id
-"""
+async def create_order_group_from_cart(user_id: int, address: str | None = None) -> int | None:
+    """Один заказ на всю корзину: строки orders с общим group_id = id первой строки.
 
-
-async def get_order_summary(order_id: int) -> dict[str, Any] | None:
+    Платёж вешается на первую строку (payments.order_id уникален), номер заказа для
+    клиента — group_id. Корзина не очищается: её чистит подтверждённая оплата.
+    """
+    items = await get_cart_items(user_id)
+    if not items:
+        return None
     db = await get_db()
+    group_id: int | None = None
     try:
-        row = await (await db.execute(f'{_ORDER_SUMMARY_SQL} WHERE o.id = ?', (order_id,))).fetchone()
-        return dict(row) if row else None
+        for item in items:
+            cursor = await db.execute(
+                """
+                INSERT INTO orders (user_id, product_id, quantity, total_price, status, shipping_cost, address, group_id)
+                VALUES (?, ?, ?, ?, 'new', 0, ?, ?)
+                """,
+                (
+                    user_id,
+                    item['product_id'],
+                    int(item['quantity']),
+                    float(item['price']) * int(item['quantity']),
+                    address,
+                    group_id,
+                ),
+            )
+            if group_id is None:
+                group_id = int(cursor.lastrowid)
+                await db.execute('UPDATE orders SET group_id = ? WHERE id = ?', (group_id, group_id))
+        await db.commit()
+        return group_id
     finally:
         await db.close()
 
 
-async def get_last_order_for_products(product_ids: Iterable[int]) -> dict[str, Any] | None:
+async def get_order_group(group_id: int) -> dict[str, Any] | None:
+    db = await get_db()
+    try:
+        rows = await (
+            await db.execute(
+                """
+                SELECT o.id, o.user_id, o.product_id, o.quantity, o.total_price, o.status, o.created_at,
+                       p.name AS product_name
+                FROM orders o
+                JOIN products p ON p.id = o.product_id
+                WHERE o.group_id = ?
+                ORDER BY o.id
+                """,
+                (group_id,),
+            )
+        ).fetchall()
+    finally:
+        await db.close()
+    if not rows:
+        return None
+    lines = [dict(row) for row in rows]
+    primary = lines[0]
+    return {
+        'group_id': group_id,
+        'user_id': int(primary['user_id']),
+        'status': primary['status'],
+        'created_at': primary['created_at'],
+        'total': sum(float(line['total_price']) for line in lines),
+        'lines': lines,
+    }
+
+
+async def get_last_group_for_products(product_ids: Iterable[int]) -> int | None:
     ids = [int(pid) for pid in product_ids]
     if not ids:
         return None
@@ -1543,24 +1595,51 @@ async def get_last_order_for_products(product_ids: Iterable[int]) -> dict[str, A
     try:
         row = await (
             await db.execute(
-                f'{_ORDER_SUMMARY_SQL} WHERE o.product_id IN ({placeholders}) ORDER BY o.id DESC LIMIT 1',
+                f"""
+                SELECT group_id FROM orders
+                WHERE product_id IN ({placeholders}) AND group_id IS NOT NULL AND status != 'cancelled'
+                ORDER BY id DESC LIMIT 1
+                """,
                 ids,
             )
         ).fetchone()
-        return dict(row) if row else None
+        return int(row['group_id']) if row else None
     finally:
         await db.close()
 
 
-async def mark_order_paid(order_id: int) -> None:
+async def mark_group_paid(group_id: int) -> None:
     db = await get_db()
     try:
         await db.execute(
             "UPDATE payments SET status = 'succeeded', paid_at = CURRENT_TIMESTAMP WHERE order_id = ?",
-            (order_id,),
+            (group_id,),
         )
-        await db.execute("UPDATE orders SET status = 'paid' WHERE id = ?", (order_id,))
+        await db.execute("UPDATE orders SET status = 'paid' WHERE group_id = ?", (group_id,))
         await db.commit()
+    finally:
+        await db.close()
+
+
+async def cancel_pending_groups(user_id: int) -> int:
+    """Отменяет неоплаченные чеки пользователя: после правки корзины старый чек неактуален."""
+    db = await get_db()
+    try:
+        await db.execute(
+            """
+            UPDATE payments SET status = 'cancelled'
+            WHERE status = 'pending' AND order_id IN (
+                SELECT id FROM orders WHERE user_id = ? AND group_id = id AND status = 'new'
+            )
+            """,
+            (user_id,),
+        )
+        cursor = await db.execute(
+            "UPDATE orders SET status = 'cancelled' WHERE user_id = ? AND group_id IS NOT NULL AND status = 'new'",
+            (user_id,),
+        )
+        await db.commit()
+        return cursor.rowcount
     finally:
         await db.close()
 

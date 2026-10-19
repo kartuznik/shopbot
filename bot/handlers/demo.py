@@ -88,15 +88,35 @@ def _cart_button(cart: CartSummary | None = None) -> InlineKeyboardButton:
 
 
 BACK_TO_MENU = ('⬅️ Назад в меню', 'dm:menu')
+BACK_TO_CATEGORIES = ('⬅️ Назад к категориям', 'dm:menu')
+
+_SECTION_EMOJI = {'Выпечка': '🥐', 'Напитки': '☕'}
+
+
+def section_label(section: str) -> str:
+    return f'{_SECTION_EMOJI.get(section, "•")} {section}'
+
+
+def item_label(item: DemoItem) -> str:
+    return f'{item.emoji} {item.title} · {format_price(item.price)} ₽'
 
 
 def menu_keyboard(catalog: DemoCatalog, cart: CartSummary | None = None) -> InlineKeyboardMarkup:
-    # Корзина — первой строкой: после добавления товаров путь к оформлению виден сразу.
-    rows: list[list[InlineKeyboardButton]] = [[_cart_button(cart)]]
+    # Корзина в корне только когда в ней уже есть товары: пустое меню — это две категории.
+    rows: list[list[InlineKeyboardButton]] = []
+    if cart is not None and not cart.empty:
+        rows.append([_cart_button(cart)])
     for section in catalog.sections():
-        rows.append([_btn(f'— {section} —', 'dm:noop')])
-        for item in catalog.items_in(section):
-            rows.append([_btn(f'{item.emoji} {item.title} · {format_price(item.price)} ₽', f'dm:item:{item.id}')])
+        rows.append([_btn(section_label(section), f'dm:sec:{section}')])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def category_keyboard(catalog: DemoCatalog, section: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in catalog.items_in(section):
+        rows.append([_btn(item_label(item), f'dm:item:{item.id}')])
+        rows.append([_btn('➕ В корзину', f'dm:add:{item.id}')])
+    rows.append([_btn(*BACK_TO_CATEGORIES)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -104,7 +124,7 @@ def card_keyboard(item: DemoItem) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_btn('➕ В корзину', f'dm:add:{item.id}'), _btn('🛒 Оформить заказ', f'dm:buy:{item.id}')],
-            [_cart_button(), _btn(*BACK_TO_MENU)],
+            [_cart_button(), _btn('⬅️ Назад', f'dm:sec:{item.section}')],
         ]
     )
 
@@ -224,6 +244,13 @@ def _item_from(callback: CallbackQuery, catalog: DemoCatalog | None) -> DemoItem
     return catalog.get((callback.data or '').split(':', 2)[2]) if catalog else None
 
 
+def _section_from(callback: CallbackQuery, catalog: DemoCatalog | None) -> str | None:
+    if catalog is None:
+        return None
+    section = (callback.data or '').split(':', 2)[2]
+    return section if section in catalog.sections() else None
+
+
 def _menu_header(catalog: DemoCatalog) -> str:
     return f'☕ {catalog.shop_name} — меню 👇'
 
@@ -312,6 +339,21 @@ async def callback_menu(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await _move(state, PurchaseEvent.OPEN_MENU)
     await _send_menu(callback.message, catalog, callback.from_user.id)
+
+
+@router.callback_query(F.data.startswith('dm:sec:'))
+async def callback_section(callback: CallbackQuery, state: FSMContext) -> None:
+    catalog = _catalog_or_none()
+    section = _section_from(callback, catalog)
+    if catalog is None or section is None or callback.message is None:
+        await callback.answer('Раздел не найден', show_alert=True)
+        return
+    await callback.answer()
+    await _move(state, PurchaseEvent.OPEN_CATEGORY, demo_section=section)
+    await callback.message.answer(
+        f'{section_label(section)} — выберите 👇',
+        reply_markup=category_keyboard(catalog, section),
+    )
 
 
 @router.callback_query(F.data.startswith('dm:item:'))

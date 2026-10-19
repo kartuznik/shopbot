@@ -230,6 +230,7 @@ def render_reminder(
 
 class PurchaseState(str, Enum):
     MENU = 'menu'
+    CATEGORY = 'category'
     CARD = 'card'
     CART = 'cart'
     CHECKOUT = 'checkout'
@@ -239,6 +240,7 @@ class PurchaseState(str, Enum):
 
 class PurchaseEvent(str, Enum):
     OPEN_MENU = 'open_menu'
+    OPEN_CATEGORY = 'open_category'
     OPEN_CARD = 'open_card'
     OPEN_CART = 'open_cart'
     ADD_TO_CART = 'add_to_cart'
@@ -251,13 +253,15 @@ class InvalidTransition(Exception):
     pass
 
 
-# Меню, карточка и корзина доступны из любого состояния: это кнопки «Назад», и новый
-# дубль записи не должен упираться в прошлый шаг. Чек — с карточки или из корзины,
-# оплата — только из чека.
+# Меню, раздел, карточка и корзина доступны из любого состояния: это кнопки «Назад»,
+# и новый дубль записи не должен упираться в прошлый шаг. Чек — с карточки или из корзины,
+# оплата — только из чека. «В корзину» на экране раздела оставляет покупателя в разделе.
 _TRANSITIONS: dict[tuple[PurchaseState, PurchaseEvent], PurchaseState] = {
     **{(state, PurchaseEvent.OPEN_MENU): PurchaseState.MENU for state in PurchaseState},
+    **{(state, PurchaseEvent.OPEN_CATEGORY): PurchaseState.CATEGORY for state in PurchaseState},
     **{(state, PurchaseEvent.OPEN_CARD): PurchaseState.CARD for state in PurchaseState},
     **{(state, PurchaseEvent.OPEN_CART): PurchaseState.CART for state in PurchaseState},
+    (PurchaseState.CATEGORY, PurchaseEvent.ADD_TO_CART): PurchaseState.CATEGORY,
     (PurchaseState.CARD, PurchaseEvent.ADD_TO_CART): PurchaseState.CARD,
     (PurchaseState.CARD, PurchaseEvent.CHECKOUT): PurchaseState.CHECKOUT,
     (PurchaseState.CART, PurchaseEvent.CHECKOUT): PurchaseState.CHECKOUT,

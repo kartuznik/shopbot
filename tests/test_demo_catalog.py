@@ -210,14 +210,15 @@ def _buttons(markup) -> list[list[tuple[str, str | None]]]:
     return [[(button.text, button.callback_data) for button in row] for row in markup.inline_keyboard]
 
 
-def test_menu_shows_cart_first_right_under_greeting(catalog):
+def test_menu_shows_only_categories_and_cart_when_full(catalog):
     rows = _buttons(demo_handlers.menu_keyboard(catalog))
-    assert rows[0] == [('🛒 Корзина', 'dm:cart')]
-    assert rows[1] == [('— Выпечка —', 'dm:noop')]
-    assert ('— Напитки —', 'dm:noop') in [row[0] for row in rows]
+    assert rows == [[('🥐 Выпечка', 'dm:sec:Выпечка')], [('☕ Напитки', 'dm:sec:Напитки')]]
 
     cart = demo_flow.CartSummary(lines=({'name': 'x'},), quantity=3, total=1090.0)
-    assert _buttons(demo_handlers.menu_keyboard(catalog, cart))[0] == [('🛒 Корзина · 3 шт · 1 090 ₽', 'dm:cart')]
+    full = _buttons(demo_handlers.menu_keyboard(catalog, cart))
+    assert full[0] == [('🛒 Корзина · 3 шт · 1 090 ₽', 'dm:cart')]
+    assert full[1:] == rows
+    assert all('dm:item:' not in (button[1] or '') for row in full for button in row)
 
 
 def test_every_screen_has_cart_or_back(catalog):
@@ -227,7 +228,7 @@ def test_every_screen_has_cart_or_back(catalog):
 
     card = _buttons(demo_handlers.card_keyboard(item))
     assert card[0] == [('➕ В корзину', 'dm:add:tart_dome'), ('🛒 Оформить заказ', 'dm:buy:tart_dome')]
-    assert ('🛒 Корзина', 'dm:cart') in card[1] and ('⬅️ Назад в меню', 'dm:menu') in card[1]
+    assert ('🛒 Корзина', 'dm:cart') in card[1] and ('⬅️ Назад', 'dm:sec:Выпечка') in card[1]
 
     assert ('🗑 Очистить корзину', 'dm:cart_clear') in sum(_buttons(demo_handlers.cart_keyboard(full)), [])
     assert _buttons(demo_handlers.cart_keyboard(empty)) == [[('⬅️ Назад в меню', 'dm:menu')]]
@@ -281,9 +282,34 @@ def test_purchase_state_machine_blocks_skipped_steps():
     assert not can_advance(PurchaseState.CONFIRMED, PurchaseEvent.PAID)
 
 
+def test_category_screen_lists_only_its_items(catalog):
+    bakery = _buttons(demo_handlers.category_keyboard(catalog, 'Выпечка'))
+    titles = [row[0][0] for row in bakery if row[0][1] and row[0][1].startswith('dm:item:')]
+    assert titles == [demo_handlers.item_label(item) for item in catalog.items_in('Выпечка')]
+    assert len(titles) == 5
+    assert all(row == [('➕ В корзину', f'dm:add:{item.id}')] for row, item in zip(bakery[1::2], catalog.items_in('Выпечка')))
+    assert bakery[-1] == [('⬅️ Назад к категориям', 'dm:menu')]
+    assert 'Раф кокосовый' not in ' '.join(titles)
+
+    drinks = _buttons(demo_handlers.category_keyboard(catalog, 'Напитки'))
+    drink_ids = [row[0][1] for row in drinks if row[0][1] and row[0][1].startswith('dm:item:')]
+    assert drink_ids == [f'dm:item:{item.id}' for item in catalog.items_in('Напитки')]
+    assert len(drink_ids) == 3
+
+
+def test_category_round_trip():
+    state = advance(PurchaseState.MENU, PurchaseEvent.OPEN_CATEGORY)
+    assert state is PurchaseState.CATEGORY
+    assert advance(state, PurchaseEvent.ADD_TO_CART) is PurchaseState.CATEGORY
+    assert advance(state, PurchaseEvent.OPEN_CARD) is PurchaseState.CARD
+    assert advance(PurchaseState.CARD, PurchaseEvent.OPEN_CATEGORY) is PurchaseState.CATEGORY
+    assert advance(PurchaseState.CATEGORY, PurchaseEvent.OPEN_MENU) is PurchaseState.MENU
+
+
 @pytest.mark.parametrize('state', list(PurchaseState))
 def test_menu_card_and_cart_reachable_from_any_state(state):
     assert advance(state, PurchaseEvent.OPEN_MENU) is PurchaseState.MENU
+    assert advance(state, PurchaseEvent.OPEN_CATEGORY) is PurchaseState.CATEGORY
     assert advance(state, PurchaseEvent.OPEN_CARD) is PurchaseState.CARD
     assert advance(state, PurchaseEvent.OPEN_CART) is PurchaseState.CART
 
@@ -653,6 +679,21 @@ def test_start_sends_greeting_with_reply_keyboard_then_inline_menu(catalog, demo
     assert catalog.shop_name in header
     assert isinstance(menu_markup, InlineKeyboardMarkup)
     assert _buttons(menu_markup) == _buttons(demo_handlers.menu_keyboard(catalog, asyncio.run(demo_flow.cart_summary(CUSTOMER_ID))))
+
+
+def test_category_button_lists_bakery_and_rejects_unknown(catalog, demo_db):
+    callback = _callback('dm:sec:Выпечка')
+    asyncio.run(demo_handlers.callback_section(callback, _state()))
+    [(text, markup)] = _sent(callback.message)
+    assert text.startswith('🥐 Выпечка')
+    shown = [row[0][1] for row in _buttons(markup) if row[0][1] and row[0][1].startswith('dm:item:')]
+    assert shown == [f'dm:item:{item.id}' for item in catalog.items_in('Выпечка')]
+    assert _buttons(markup)[-1] == [('⬅️ Назад к категориям', 'dm:menu')]
+
+    missing = _callback('dm:sec:Нет такого')
+    asyncio.run(demo_handlers.callback_section(missing, _state()))
+    missing.answer.assert_awaited_once_with('Раздел не найден', show_alert=True)
+    missing.message.answer.assert_not_awaited()
 
 
 def test_menu_button_repeats_start(catalog, demo_db):
